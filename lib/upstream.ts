@@ -1,5 +1,8 @@
 // The two public APIs that the page reads. Each function checks the answer, so the page can trust the shape.
 
+import { currentTracing } from './tracing.ts';
+import type { Tracing } from './tracing.ts';
+
 export interface CoreSummary {
   readonly version: string;
   readonly itemCount: number;
@@ -37,11 +40,14 @@ export class UpstreamError extends Error {
   override readonly name = 'UpstreamError';
 }
 
-export type FetchLike = (url: string, init: { signal: AbortSignal }) => Promise<Response>;
+// The request that the page sends. The tracing adds the header traceparent to it, so the headers are optional.
+export type FetchLike = (url: string, init: { signal: AbortSignal; headers?: Record<string, string> }) => Promise<Response>;
 
 export interface UpstreamOptions {
   readonly fetch: FetchLike;
   readonly timeoutMs: number;
+  // The default is the tracing of the function, which is read at each request (see tracing.ts).
+  readonly tracing?: Tracing;
 }
 
 const UNDERSTOOD = 'an answer that this page does not understand';
@@ -85,11 +91,16 @@ function accountOf(body: unknown): AccountData | undefined {
 }
 
 // One GET request with a time limit. The signal also covers the read of the body.
+// Inside a traced request, the call is a client span and carries the header traceparent. The APIs are public,
+// so the request has no signature and the header needs no special order.
+// The page starts both calls at the same time. Each call reads the server span as its parent, so the two
+// client spans are siblings.
 async function getJson(url: string, options: UpstreamOptions): Promise<unknown> {
   const signal = AbortSignal.timeout(options.timeoutMs);
+  const tracing = options.tracing ?? currentTracing();
   let response: Response;
   try {
-    response = await options.fetch(url, { signal });
+    response = await tracing.fetch(options.fetch, url, { signal });
   } catch (cause) {
     throw new UpstreamError(signal.aborted ? 'the request timed out' : 'the request failed', { cause });
   }

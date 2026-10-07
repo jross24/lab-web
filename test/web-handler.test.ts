@@ -1,6 +1,10 @@
 import type { APIGatewayProxyEventV2, Context } from 'aws-lambda';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SpanKind, SpanStatusCode } from '@opentelemetry/api';
+import { InMemorySpanExporter } from '@opentelemetry/sdk-trace';
+import type { ReadableSpan } from '@opentelemetry/sdk-trace';
 import type { Signals } from '../lib/instrument.ts';
+import { Tracing } from '../lib/tracing.ts';
 import type { FetchLike } from '../lib/upstream.ts';
 import { createHandler, handler } from '../lib/web-handler.ts';
 import { accountBody, catalogueBody, textsOf, WEB_VERSION } from './fixtures.ts';
@@ -406,5 +410,181 @@ describe('the fault switch', () => {
     const { handle } = handlerFor({ catalogue: json(catalogueBody), account: json(accountBody) });
     expect((await handle(page)).statusCode).toBe(200);
     expect((await handle({ rawPath: '/health' })).statusCode).toBe(200);
+  });
+});
+
+describe('GET / with tracing', () => {
+  const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const PARENT = '00f067aa0ba902b7';
+  const TRACEPARENT = `00-${TRACE}-${PARENT}-01`;
+  const healthy = { catalogue: json(catalogueBody), account: json(accountBody) };
+
+  // A fake fetch that records the headers of each call and answers after a short pause.
+  function tracedSetup(answers: { catalogue: Answer; account: Answer } = healthy) {
+    const memory = new InMemorySpanExporter();
+    const tracing = Tracing.create({ service: 'web', version: WEB_VERSION, exporter: memory });
+    const requests: { url: string; traceparent: string | undefined }[] = [];
+    const send: FetchLike = async (url, init) => {
+      requests.push({ url, traceparent: init.headers?.traceparent });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const answer = url.startsWith(ENV.CATALOGUE_URL) ? answers.catalogue : answers.account;
+      if (answer instanceof Error) throw answer;
+      if (answer === 'silent') {
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(init.signal.reason));
+        });
+      }
+      return answer.clone();
+    };
+    const handle = createHandler({ fetch: send, env: ENV, timeoutMs: 100, tracing });
+    const spans = (kind: SpanKind): ReadableSpan[] => memory.getFinishedSpans().filter((span) => span.kind === kind);
+    return { handle, memory, requests, spans, tracing };
+  }
+
+  it('records one server span and two client spans, and both client spans are children of the server span', async () => {
+    const { handle, spans, tracing } = tracedSetup();
+    await tracing.serve({ name: 'GET /', headers: { traceparent: TRACEPARENT } }, () => handle(page));
+    expect(spans(SpanKind.SERVER)).toHaveLength(1);
+    expect(spans(SpanKind.CLIENT)).toHaveLength(2);
+    const server = spans(SpanKind.SERVER)[0] as ReadableSpan;
+    // Promise.all starts both calls at the same time. Neither client span may become the parent of the other.
+    for (const client of spans(SpanKind.CLIENT)) {
+      expect(client.parentSpanContext?.spanId).toBe(server.spanContext().spanId);
+      expect(client.spanContext().traceId).toBe(TRACE);
+    }
+    expect(
+      spans(SpanKind.CLIENT)
+        .map((span) => span.name)
+        .sort(),
+    ).toEqual(['GET account.example.test', 'GET catalogue.example.test']);
+  });
+
+  it('puts a traceparent with the same trace ID on both requests, each with the span ID of its own client span', async () => {
+    const { handle, requests, spans, tracing } = tracedSetup();
+    await tracing.serve({ name: 'GET /' }, () => handle(page));
+    expect(requests).toHaveLength(2);
+    const traceIds = requests.map((request) => request.traceparent?.split('-')[1]);
+    expect(traceIds[0]).toMatch(/^[0-9a-f]{32}$/);
+    expect(traceIds[1]).toBe(traceIds[0]);
+    for (const request of requests) {
+      const client = spans(SpanKind.CLIENT).find((span) => span.name === `GET ${new URL(request.url).host}`) as ReadableSpan;
+      expect(request.traceparent).toBe(`00-${traceIds[0]}-${client.spanContext().spanId}-01`);
+    }
+    expect(requests[0]?.traceparent).not.toBe(requests[1]?.traceparent);
+  });
+
+  it('returns the same page as without tracing', async () => {
+    const plain = handlerFor({ catalogue: json(catalogueBody), account: json(accountBody) });
+    const { handle, tracing } = tracedSetup();
+    const withTracing = await tracing.serve({ name: 'GET /' }, () => handle(page));
+    expect(withTracing).toEqual(await plain.handle(page));
+  });
+
+  it('marks only the client span of the failed API as an error, and the page still has its error block', async () => {
+    const { handle, spans, tracing } = tracedSetup({ catalogue: json({ error: 'boom' }, 503), account: json(accountBody) });
+    const response = await tracing.serve({ name: 'GET /' }, () => handle(page));
+    expect(response.statusCode).toBe(200);
+    expect(textsOf(response.body, 'catalogue-error')[0]).toContain('HTTP 503');
+    const status = (name: string): SpanStatusCode | undefined => spans(SpanKind.CLIENT).find((span) => span.name === name)?.status.code;
+    expect(status('GET catalogue.example.test')).toBe(SpanStatusCode.ERROR);
+    expect(status('GET account.example.test')).toBe(SpanStatusCode.UNSET);
+  });
+
+  it('records a call that times out as an error on its client span', async () => {
+    const { handle, spans, tracing } = tracedSetup({ catalogue: json(catalogueBody), account: 'silent' });
+    const response = await tracing.serve({ name: 'GET /' }, () => handle(page));
+    expect(textsOf(response.body, 'account-error')[0]).toContain('the request timed out');
+    expect(spans(SpanKind.CLIENT).find((span) => span.name === 'GET account.example.test')?.status.code).toBe(SpanStatusCode.ERROR);
+  });
+
+  it('makes no client span for GET /health', async () => {
+    const { handle, requests, spans, tracing } = tracedSetup();
+    await tracing.serve({ name: 'GET /health' }, () => handle({ rawPath: '/health' }));
+    expect(spans(SpanKind.CLIENT)).toHaveLength(0);
+    expect(requests).toEqual([]);
+  });
+
+  it('keeps the calls of two pages at the same time in their own traces', async () => {
+    const { handle, requests, spans, tracing } = tracedSetup();
+    const first = `00-${'a'.repeat(32)}-${PARENT}-01`;
+    const second = `00-${'b'.repeat(32)}-${PARENT}-01`;
+    await Promise.all([
+      tracing.serve({ name: 'GET /', headers: { traceparent: first } }, () => handle(page)),
+      tracing.serve({ name: 'GET /', headers: { traceparent: second } }, () => handle(page)),
+    ]);
+    expect(requests).toHaveLength(4);
+    const clientsOf = (letter: string): ReadableSpan[] =>
+      spans(SpanKind.CLIENT).filter((span) => span.spanContext().traceId === letter.repeat(32));
+    expect(clientsOf('a')).toHaveLength(2);
+    expect(clientsOf('b')).toHaveLength(2);
+    expect(requests.filter((request) => request.traceparent?.includes(`-${'a'.repeat(32)}-`))).toHaveLength(2);
+    expect(requests.filter((request) => request.traceparent?.includes(`-${'b'.repeat(32)}-`))).toHaveLength(2);
+  });
+});
+
+describe('the exported handler with the tracing of Lambda', () => {
+  const EVENT = {
+    rawPath: '/',
+    routeKey: 'GET /',
+    headers: {},
+    requestContext: { http: { method: 'GET' } },
+  } as unknown as APIGatewayProxyEventV2;
+  const CONTEXT = { awsRequestId: 'req-9' } as Context;
+
+  interface SentSpan {
+    readonly name: string;
+    readonly traceId: string;
+    readonly spanId: string;
+    readonly parentSpanId?: string;
+  }
+
+  it('traces the two calls with the tracing that the wrapper makes, and exports the spans to X-Ray', async () => {
+    // Lambda sets these variables. The tracing is on only when the function name is set.
+    vi.stubEnv('AWS_LAMBDA_FUNCTION_NAME', 'lab-web-function');
+    vi.stubEnv('AWS_REGION', 'eu-west-2');
+    vi.stubEnv('AWS_ACCESS_KEY_ID', 'AKIDEXAMPLE');
+    vi.stubEnv('AWS_SECRET_ACCESS_KEY', 'secret');
+    vi.stubEnv('VERSION', WEB_VERSION);
+    vi.stubEnv('CATALOGUE_URL', ENV.CATALOGUE_URL);
+    vi.stubEnv('ACCOUNT_URL', ENV.ACCOUNT_URL);
+    const written: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    });
+    const sent: { url: string; headers: Record<string, string>; body: string | undefined }[] = [];
+    vi.stubGlobal('fetch', (url: string, init: { headers?: Record<string, string>; body?: string }): Promise<Response> => {
+      sent.push({ url, headers: init.headers ?? {}, body: init.body });
+      if (url.startsWith('https://xray.')) return Promise.resolve(new Response('{}'));
+      return Promise.resolve(url.startsWith(ENV.CATALOGUE_URL) ? json(catalogueBody) : json(accountBody));
+    });
+
+    // The wrapper makes the tracing when the module loads, so load a new copy of the module now.
+    vi.resetModules();
+    const { handler: tracedHandler } = await import('../lib/web-handler.ts');
+    const response = await tracedHandler(EVENT, CONTEXT);
+    expect(response.statusCode).toBe(200);
+
+    const upstream = sent.filter((call) => !call.url.startsWith('https://xray.'));
+    const exports = sent.filter((call) => call.url === 'https://xray.eu-west-2.amazonaws.com/v1/traces');
+    expect(upstream).toHaveLength(2);
+    expect(exports).toHaveLength(1);
+
+    const body = JSON.parse(exports[0]?.body ?? '') as { resourceSpans: { scopeSpans: { spans: SentSpan[] }[] }[] };
+    const spans = body.resourceSpans.flatMap((resource) => resource.scopeSpans.flatMap((scope) => scope.spans));
+    expect(spans.map((span) => span.name).sort()).toEqual(['GET /', 'GET account.example.test', 'GET catalogue.example.test']);
+    const server = spans.find((span) => span.name === 'GET /');
+    for (const call of upstream) {
+      const [, traceId, spanId] = (call.headers.traceparent ?? '').split('-');
+      const client = spans.find((span) => span.spanId === spanId);
+      expect(traceId).toBe(server?.traceId);
+      expect(client?.parentSpanId).toBe(server?.spanId);
+    }
+    // The two APIs are public, so their requests carry the header traceparent and nothing else.
+    expect(upstream.map((call) => Object.keys(call.headers))).toEqual([['traceparent'], ['traceparent']]);
+
+    const log = JSON.parse(written[0] ?? '') as { traceId: string };
+    const id = server?.traceId ?? '';
+    expect(log.traceId).toBe(`1-${id.slice(0, 8)}-${id.slice(8)}`);
   });
 });

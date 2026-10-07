@@ -1,3 +1,5 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { CloudAssembly, CloudFormationStackArtifact } from 'aws-cdk-lib/cx-api';
 import { createApp } from '../lib/app.ts';
@@ -77,6 +79,44 @@ describe('the app with no context', () => {
 
   it('uses the version 0.0.0-dev', () => {
     expect(versions(assembly)).toEqual(['0.0.0-dev', '0.0.0-dev', '0.0.0-dev']);
+  });
+});
+
+// The number of bytes in the bundle that come from files whose path starts with the prefix.
+// esbuild writes a comment "// node_modules/<package>/<file>" before the code of each file of the bundle.
+function bytesFrom(bundle: string, prefix: string): number {
+  let source = '';
+  let bytes = 0;
+  for (const line of bundle.split('\n')) {
+    source = /^\/\/ ((?:node_modules|lib)\/\S+)$/.exec(line)?.[1] ?? source;
+    if (source.startsWith(prefix)) bytes += Buffer.byteLength(line) + 1;
+  }
+  return bytes;
+}
+
+describe('the bundled Lambda code', () => {
+  const assembly = createApp().synth();
+
+  // The S3 key of the code is the hash of the asset, and the asset is the directory asset.<hash> in the cloud assembly.
+  function bundleDirectory(): string {
+    const [code] = lambdaCode(assembly) as { S3Key?: string }[];
+    return join(assembly.directory, `asset.${(code?.S3Key ?? '').replace(/.zip$/, '')}`);
+  }
+
+  it('is one ES module, index.mjs, and not a CommonJS file', () => {
+    const files = readdirSync(bundleDirectory());
+    expect(files).toContain('index.mjs');
+    expect(files).not.toContain('index.js');
+  });
+
+  it('has little OpenTelemetry code, because esbuild removed the code that no request uses', () => {
+    // As CommonJS, the OpenTelemetry packages alone are 641 KB. The module entries of the packages let esbuild remove most of it.
+    // The test does not measure the whole file. React is in the file too, and it is more than 1 MB: React picks its
+    // development or its production build at run time, so esbuild keeps both.
+    const bundle = readFileSync(join(bundleDirectory(), 'index.mjs'), 'utf8');
+    const openTelemetry = bytesFrom(bundle, 'node_modules/@opentelemetry/');
+    expect(openTelemetry, 'the comments that name the files of the bundle').toBeGreaterThan(0);
+    expect(openTelemetry).toBeLessThan(200_000);
   });
 });
 

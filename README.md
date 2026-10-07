@@ -69,7 +69,8 @@ The catalogue stack and the account stack each write one SSM parameter in their 
 CloudFormation reads the two parameters at deployment. The CDK does not read them at synth.
 So the templates name no account, and one `cdk synth` still serves each account.
 
-Both APIs are public, so the function sends plain requests. It signs nothing and needs no IAM permission.
+Both APIs are public, so the function sends plain requests to them. It signs nothing and needs no `execute-api` permission.
+Its role has one statement, for the traces. See "Tracing".
 
 The stack also writes its own address.
 
@@ -101,15 +102,18 @@ If an API gets a new URL, release or redeploy this application to pick it up.
 
 This service follows the pattern of [lab-svc-core](https://github.com/jross24/lab-svc-core/blob/main/README.md).
 The core README explains the mechanics: the alias, the CodeDeploy deployment group, the alarms, the log line, the metrics, tracing and the drill.
-This README does not copy them. It lists what is the same and what is different.
+This README does not copy them. It lists what is the same and what is different. The section "Tracing" below covers the traces of this service.
 
 ### What is the same as core
 
-- Five files are exact copies of the files in core: `lib/gradual-release.ts`, `lib/service-dashboard.ts`, `lib/instrument.ts`, `lib/logger.ts` and `lib/metrics.ts`. Change them in core, then copy them again.
+- Nine files are exact copies of the files in core. Change them in core, then copy them again.
+  - The release and the observability: `lib/gradual-release.ts`, `lib/service-dashboard.ts`, `lib/instrument.ts`, `lib/logger.ts` and `lib/metrics.ts`.
+  - The tracing: `lib/tracing.ts`, `lib/xray-exporter.ts`, `lib/sigv4.ts` and `lib/function-defaults.ts`.
+  - The tests of the tracing files are copies too: `test/tracing.test.ts`, `test/xray-exporter.test.ts` and `test/sigv4.test.ts`.
 - The function has the alias `live`. The API calls the alias, and not the function.
 - A CodeDeploy deployment group moves the traffic of the alias to each new version. If an alarm fires, it stops and rolls the traffic back.
 - Each request writes one line of JSON to the log and one metric line (embedded metric format). The metric has the dimensions `service` and `version`.
-- Lambda active tracing is on. The log line carries the trace ID.
+- OpenTelemetry makes the traces, and Lambda active tracing is off. The log line carries the trace ID in the form of X-Ray. See "Tracing".
 - The stage config has the settings `release` and `injectFault`. A unit test compares the templates of the three stages.
 
 ### What is different from core
@@ -120,6 +124,8 @@ This README does not copy them. It lists what is the same and what is different.
 - **A third alarm.** Core throws when it fails, so Lambda `Errors` sees its failures. Web can handle a failure and still answer. So the stack sets `serviceErrors` and gets `ServiceErrorsAlarm`. See "What an error means for web".
 - **A longer duration.** One page waits for two APIs, and each API waits for core. The latency threshold is 1500 ms, and not the 500 ms of core. See "Where the latency threshold comes from".
 - **A longer timeout.** The function times out after 10 seconds. Each call to an API has a limit of 5 seconds.
+- **Two client spans at the same time.** A page calls two services in parallel, so one request has two client spans. Catalogue and account make one call to core in a request. See "Tracing".
+- **No signed call to another service.** Web calls public APIs. The function signs only the export of its spans to X-Ray, and it needs no permission for the two APIs.
 - **The dashboard name.** The shared dashboard code names a dashboard `lab-svc-<service>`, so this dashboard is `lab-svc-web`. A unit test checks the name.
   The dashboard has one more graph than core: "Errors that the service counted, by version".
 - **The fault switch fails each route.** With `injectFault` on, `GET /health` throws too.
@@ -136,6 +142,59 @@ Do not redeploy version `0.1.0`. It has no alias. A redeploy of it would remove 
 Open CloudWatch in the console (region `eu-west-2`), then Dashboards, then `lab-svc-web`.
 The core README shows the checks on the command line. Use the stack name `lab-web` in them.
 The function has the name that `aws cloudformation list-stack-resources --stack-name lab-web` shows.
+
+## Tracing
+
+One trace follows a page request from web to catalogue or account, and then to core. OpenTelemetry makes the trace.
+The SDK is in the bundle of the function. There is no Lambda layer, and Lambda active tracing is off.
+The [Tracing section of the lab-svc-core README](https://github.com/jross24/lab-svc-core#tracing) has the decision, the measurements and the trade-off. This README does not repeat them.
+
+### What the service records
+
+- One server span for each request. It has the route key as its name, for example `GET /`. If the request has the header `traceparent`, the span continues the trace of the caller.
+- One client span for each call to another service. A page request has two: `GET <catalogue host>` and `GET <account host>`. Both are children of the server span.
+- `GET /health` calls no service, so its trace has the server span only.
+
+A client span has the status `error` when the answer is HTTP 400 or more, or when the call throws.
+The server span has the status `error` when the response is HTTP 500 or more, or when the page is degraded. See "What an error means for web".
+The log line of the request carries the trace ID of the server span.
+
+### How the trace reaches the next service
+
+The function puts the header `traceparent` on each request to the catalogue API and the account API. Both services read it and continue the trace.
+Web signs nothing for these two calls, because the APIs are public. So the header needs no special order here.
+The catalogue service and the account service sign their call to core first and add the header after.
+The signature lists only the host header and the `x-amz-` headers, so the extra header does not break it.
+
+The page starts both calls at the same time with `Promise.all`. Each call reads the server span as its parent from the context of the request.
+So neither client span becomes the parent of the other. A unit test proves this: `records one server span and two client spans, and both client spans are children of the server span`.
+Another test sends two pages at the same time and checks that each page keeps its own trace.
+
+### How to find a trace
+
+1. Open a log line of the function in CloudWatch Logs. Copy the field `traceId`. It looks like `1-4bf92f35-77b34da6a3ce929d0e0e4736`.
+2. Run this command with a read-only profile:
+   ```
+   aws xray batch-get-traces --trace-ids <traceId> --region eu-west-2 --profile <read-only-profile>
+   ```
+
+The result has the spans of web, of catalogue or account, and of core. They share one trace ID.
+The OTLP endpoint of X-Ray needs CloudWatch Transaction Search. The stack of core turns it on for the account. This repository does not touch it.
+
+### What the stack adds
+
+- **One IAM statement.** The role of the function can call `xray:PutTraceSegments` on the resource `*`. The OTLP endpoint of X-Ray checks this action.
+  It is the only X-Ray action. X-Ray actions do not support a resource, so the resource is `*`.
+- **512 MB of memory.** Lambda gives CPU in proportion to memory. In the measurement of core, the first request spent 1.9 s on the connection to the trace endpoint at 128 MB, and 0.45 s at 512 MB.
+  The constant `FUNCTION_MEMORY_MB` in `lib/function-defaults.ts` holds the value.
+- **An ES module bundle.** esbuild writes `index.mjs`, and it reads the `module` entry of each package. So it removes the code that no request uses.
+  The OpenTelemetry code in the bundle is about 97 KB. The whole file is 1.6 MB because React is in it. React was 1.5 MB of the file before the tracing change.
+- **No Lambda layer and no Lambda active tracing.** A second, unlinked trace would appear for each call with active tracing.
+
+The function sends the spans at the end of each request, because Lambda freezes the function when the handler returns.
+So the request waits for the export. The longest wait is 2.5 seconds. A failed export never fails the request. The function writes one `WARN` line, `trace export failed`.
+
+The tracing is off outside Lambda, and in Lambda when the environment variable `TRACING` is `off`. A unit test run needs no AWS credentials.
 
 ## What an error means for web
 
@@ -181,6 +240,7 @@ So one page is a chain of three functions in a row: web, catalogue or account, a
 
 The lab measured this with read-only calls: CloudWatch metrics, CloudWatch Logs Insights on the `REPORT` lines of the function, and public `GET /` requests.
 The times in the table are UTC, on 2026-10-06 and 2026-10-07. The p50 and p99 of the single requests come from the `REPORT` lines.
+The lab took them before the tracing change. Since then the function has 512 MB of memory, and each request waits for the export of its spans. See "Tracing".
 
 | Stage | When | What | Calls | p50 | p99 | Slowest |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -303,7 +363,7 @@ The three files in `.github/workflows/` are copies of the files in lab-svc-catal
 ## Run the checks locally
 
 You need Node.js 22.18 or later. Node.js runs the TypeScript files directly, so there is no build step.
-esbuild bundles the Lambda code during `cdk synth`. It also compiles the JSX. You do not need Docker.
+esbuild bundles the Lambda code during `cdk synth`. It writes one ES module, `index.mjs`, and it also compiles the JSX. You do not need Docker.
 
 ```
 npm ci
@@ -314,6 +374,7 @@ npm run synth
 ```
 
 The tests and the synthesis do not need AWS credentials or a network.
+The tests of the bundle read the synthesized `index.mjs`. They check the file name and the size of the OpenTelemetry code in it.
 
 ## Deploy to a personal account
 
@@ -338,12 +399,16 @@ The `Dev` stage has the alias, the deployment group, the alarms and the dashboar
 | `lib/app.ts` | Reads the context values and makes the stages. |
 | `lib/stages.ts` | The typed settings of each stage: log retention, the release type and the fault switch. |
 | `lib/web-stage.ts` | The CDK stage. |
-| `lib/web-stack.ts` | The stack: SSM lookups, function, alias and release, API, dashboard, SSM parameter, outputs. |
+| `lib/web-stack.ts` | The stack: SSM lookups, function (512 MB, ES module bundle, one X-Ray statement), alias and release, API, dashboard, SSM parameter, outputs. |
 | `lib/gradual-release.ts` | **Copy of core.** The alias, the deployment group, the three alarms and the `Release` type. |
 | `lib/service-dashboard.ts` | **Copy of core.** The dashboard of a stage. |
-| `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | **Copy of core.** The wrapper of the handler, the log line and the metric line. |
+| `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | **Copy of core.** The wrapper of the handler (it makes the server span), the log line and the metric line. |
+| `lib/tracing.ts` | **Copy of core.** The OpenTelemetry tracing: the server span, the client span, the header `traceparent` and the flush. |
+| `lib/xray-exporter.ts` | **Copy of core.** Sends the spans to the OTLP endpoint of X-Ray. |
+| `lib/sigv4.ts` | **Copy of core.** AWS Signature Version 4. Only the exporter uses it. |
+| `lib/function-defaults.ts` | **Copy of core.** The memory (512 MB) and the esbuild settings (ES module) of the function. |
 | `lib/web-handler.ts` | The Lambda handler. It routes the two requests, calls the two APIs, sets the signal `degraded` and holds the fault switch. |
-| `lib/upstream.ts` | Calls the two APIs, with a time limit, and checks the answers. |
+| `lib/upstream.ts` | Calls the two APIs, with a time limit and a client span, and checks the answers. |
 | `lib/page.tsx` | The React components. They are pure: data in, markup out. |
-| `test/` | The unit tests (vitest). |
+| `test/` | The unit tests (vitest). `tracing.test.ts`, `xray-exporter.test.ts` and `sigv4.test.ts` are copies of the tests of core. |
 | `.github/workflows/` | Three small files that call the workflows in lab-workflows. |
