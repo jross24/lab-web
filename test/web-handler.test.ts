@@ -1,6 +1,8 @@
+import type { APIGatewayProxyEventV2, Context } from 'aws-lambda';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Signals } from '../lib/instrument.ts';
 import type { FetchLike } from '../lib/upstream.ts';
-import { createHandler } from '../lib/web-handler.ts';
+import { createHandler, handler } from '../lib/web-handler.ts';
 import { accountBody, catalogueBody, textsOf, WEB_VERSION } from './fixtures.ts';
 
 const ENV = {
@@ -42,6 +44,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -196,5 +200,211 @@ describe('GET /health', () => {
       service: 'web',
       version: '2.0.0',
     });
+  });
+});
+
+describe('the signals of the handler', () => {
+  // The wrapper gives the handler an object for the signals. The handler sets "degraded" when it
+  // handled a failure and still answered with a good status. See Signals in lib/instrument.ts.
+  async function signalsOf(answers: { catalogue: Answer; account: Answer }, request = page): Promise<Signals> {
+    const signals: Signals = {};
+    const { handle } = handlerFor(answers);
+    await handle(request, signals);
+    return signals;
+  }
+
+  it('leaves degraded unset when both APIs answer', async () => {
+    expect(await signalsOf({ catalogue: json(catalogueBody), account: json(accountBody) })).toEqual({});
+  });
+
+  it('sets degraded to the safe reason of the catalogue when only the catalogue fails', async () => {
+    const signals = await signalsOf({ catalogue: 'silent', account: json(accountBody) });
+    expect(signals.degraded).toBe('catalogue: the request timed out');
+  });
+
+  it('sets degraded to the safe reason of the account when only the account fails', async () => {
+    const signals = await signalsOf({ catalogue: json(catalogueBody), account: json({ error: 'boom' }, 500) });
+    expect(signals.degraded).toBe('account: HTTP 500');
+  });
+
+  it('uses the same reason as the error block of the page', async () => {
+    const { handle } = handlerFor({ catalogue: json({ nothing: true }), account: json(accountBody) });
+    const signals: Signals = {};
+    const html = (await handle(page, signals)).body;
+    expect(signals.degraded).toBe('catalogue: an answer that this page does not understand');
+    expect(textsOf(html, 'catalogue-error')[0]).toContain('an answer that this page does not understand');
+  });
+
+  it('does not copy the body or the network error of a failed call into degraded', async () => {
+    const body = await signalsOf({
+      catalogue: json({ message: 'role secret-role is not allowed' }, 403),
+      account: json(accountBody),
+    });
+    expect(body.degraded).toBe('catalogue: HTTP 403');
+    const network = await signalsOf({
+      catalogue: json(catalogueBody),
+      account: new TypeError('connect ECONNREFUSED 10.1.2.3:443'),
+    });
+    expect(network.degraded).toBe('account: the request failed');
+    expect(JSON.stringify([body, network])).not.toMatch(/secret-role|ECONNREFUSED|10\.1\.2\.3/);
+  });
+
+  it('leaves degraded unset when both APIs fail, because the status 502 is already an error', async () => {
+    const signals: Signals = {};
+    const { handle } = handlerFor({ catalogue: json({}, 500), account: json({}, 503) });
+    expect((await handle(page, signals)).statusCode).toBe(502);
+    expect(signals).toEqual({});
+  });
+
+  it('leaves degraded unset for GET /health', async () => {
+    const signals = await signalsOf(
+      { catalogue: new Error('never'), account: new Error('never') },
+      { rawPath: '/health' },
+    );
+    expect(signals).toEqual({});
+  });
+
+  it('works when the caller gives no signals', async () => {
+    const { handle } = handlerFor({ catalogue: 'silent', account: json(accountBody) });
+    expect((await handle(page)).statusCode).toBe(200);
+  });
+});
+
+describe('the exported handler: the log line and the metric line', () => {
+  const EVENT = { rawPath: '/', routeKey: 'GET /' } as APIGatewayProxyEventV2;
+  const HEALTH_EVENT = { rawPath: '/health', routeKey: 'GET /health' } as APIGatewayProxyEventV2;
+  const CONTEXT = { awsRequestId: 'req-9' } as Context;
+  const CATALOGUE_URL = 'https://catalogue.example.test';
+  const ACCOUNT_URL = 'https://account.example.test';
+
+  let written: string[];
+  let requested: string[];
+
+  // Collect what the handler writes to stdout. The test environment is not Lambda, so the variables are stubs.
+  beforeEach(() => {
+    written = [];
+    requested = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    });
+    vi.stubEnv('VERSION', WEB_VERSION);
+    vi.stubEnv('CATALOGUE_URL', CATALOGUE_URL);
+    vi.stubEnv('ACCOUNT_URL', ACCOUNT_URL);
+  });
+
+  function stubUpstreams(answers: { catalogue: () => Response; account: () => Response }): void {
+    vi.stubGlobal('fetch', (url: string): Promise<Response> => {
+      requested.push(url);
+      return Promise.resolve(url.startsWith(CATALOGUE_URL) ? answers.catalogue() : answers.account());
+    });
+  }
+
+  const healthy = { catalogue: () => json(catalogueBody), account: () => json(accountBody) };
+
+  function lines(): Record<string, unknown>[] {
+    return written.map((chunk) => JSON.parse(chunk) as Record<string, unknown>);
+  }
+
+  it('counts a healthy page as no error, and writes no degraded reason', async () => {
+    stubUpstreams(healthy);
+    const response = await handler(EVENT, CONTEXT);
+    expect(response.statusCode).toBe(200);
+    expect(lines()).toHaveLength(2);
+    const [log, metric] = lines();
+    expect(log).toMatchObject({ level: 'INFO', service: 'web', version: WEB_VERSION, route: 'GET /', status: 200 });
+    expect(log).not.toHaveProperty('degraded');
+    expect(metric).toMatchObject({ service: 'web', version: WEB_VERSION, requests: 1, errors: 0 });
+  });
+
+  it('counts a degraded page as an error, and logs it as a warning with the safe reason', async () => {
+    // One API fails. The page is HTTP 200 with an error block. The user sees an error, so the release gate must see it.
+    stubUpstreams({
+      catalogue: () => json({ message: 'role secret-role is not allowed' }, 503),
+      account: healthy.account,
+    });
+    const response = await handler(EVENT, CONTEXT);
+    expect(response.statusCode).toBe(200);
+    const [log, metric] = lines();
+    expect(log).toMatchObject({ level: 'WARN', status: 200, degraded: 'catalogue: HTTP 503' });
+    expect(metric).toMatchObject({ service: 'web', version: WEB_VERSION, requests: 1, errors: 1 });
+    expect(written.join('')).not.toContain('secret-role');
+  });
+
+  it('counts a page with two failed APIs as an error with the level ERROR', async () => {
+    stubUpstreams({ catalogue: () => json({}, 500), account: () => json({}, 500) });
+    const response = await handler(EVENT, CONTEXT);
+    expect(response.statusCode).toBe(502);
+    const [log, metric] = lines();
+    expect(log).toMatchObject({ level: 'ERROR', status: 502 });
+    expect(metric).toMatchObject({ errors: 1 });
+  });
+
+  it('counts GET /health as no error, and calls no API', async () => {
+    stubUpstreams({ catalogue: () => json({}, 500), account: () => json({}, 500) });
+    const response = await handler(HEALTH_EVENT, CONTEXT);
+    expect(response.statusCode).toBe(200);
+    const [log, metric] = lines();
+    expect(log).toMatchObject({ level: 'INFO', route: 'GET /health', status: 200 });
+    expect(log).not.toHaveProperty('degraded');
+    expect(metric).toMatchObject({ requests: 1, errors: 0 });
+    expect(requested).toEqual([]);
+  });
+
+  it('marks only the call that was degraded, and not the next call', async () => {
+    stubUpstreams({ catalogue: () => json({}, 500), account: healthy.account });
+    await handler(EVENT, CONTEXT);
+    stubUpstreams(healthy);
+    await handler(EVENT, CONTEXT);
+    const [firstLog, firstMetric, secondLog, secondMetric] = lines();
+    expect(firstLog).toMatchObject({ degraded: 'catalogue: HTTP 500' });
+    expect(firstMetric).toMatchObject({ errors: 1 });
+    expect(secondLog).not.toHaveProperty('degraded');
+    expect(secondMetric).toMatchObject({ errors: 0 });
+  });
+});
+
+describe('the fault switch', () => {
+  const EVENT = { rawPath: '/', routeKey: 'GET /' } as APIGatewayProxyEventV2;
+  const HEALTH_EVENT = { rawPath: '/health', routeKey: 'GET /health' } as APIGatewayProxyEventV2;
+  const CONTEXT = { awsRequestId: 'req-9' } as Context;
+
+  let written: string[];
+
+  beforeEach(() => {
+    written = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    });
+  });
+
+  it.each([
+    ['GET /', EVENT],
+    ['GET /health', HEALTH_EVENT],
+  ])('throws on %s when INJECT_FAULT is "true", so that Lambda counts an error', async (_route, event) => {
+    // The release gate needs a failure that Lambda counts. /health fails too, because it is a route of the service.
+    vi.stubEnv('INJECT_FAULT', 'true');
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    await expect(handler(event, CONTEXT)).rejects.toThrow(/injected fault/);
+    expect(JSON.parse(written[0] ?? '')).toMatchObject({ level: 'ERROR', status: 500 });
+    expect(JSON.parse(written[1] ?? '')).toMatchObject({ errors: 1 });
+    // The fault comes first: no API call.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('throws from createHandler too, for both routes', async () => {
+    vi.stubEnv('INJECT_FAULT', 'true');
+    const { handle } = handlerFor({ catalogue: json(catalogueBody), account: json(accountBody) });
+    await expect(handle(page)).rejects.toThrow(/injected fault/);
+    await expect(handle({ rawPath: '/health' })).rejects.toThrow(/injected fault/);
+  });
+
+  it.each([undefined, 'false', 'TRUE', '1', ''])('does not throw when INJECT_FAULT is %j', async (value) => {
+    vi.stubEnv('INJECT_FAULT', value);
+    const { handle } = handlerFor({ catalogue: json(catalogueBody), account: json(accountBody) });
+    expect((await handle(page)).statusCode).toBe(200);
+    expect((await handle({ rawPath: '/health' })).statusCode).toBe(200);
   });
 });
