@@ -2,11 +2,13 @@ import { fileURLToPath } from 'node:url';
 import { CfnOutput, Duration, RemovalPolicy, Stack } from 'aws-cdk-lib';
 import { CfnIntegration, HttpApi, HttpMethod } from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
-import { CfnPermission, Runtime, Tracing } from 'aws-cdk-lib/aws-lambda';
+import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
+import { CfnPermission, Runtime } from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup } from 'aws-cdk-lib/aws-logs';
 import { StringParameter } from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
+import { FUNCTION_BUNDLING, FUNCTION_MEMORY_MB } from './function-defaults.ts';
 import { GradualRelease } from './gradual-release.ts';
 import { ServiceDashboard } from './service-dashboard.ts';
 import type { StageConfig } from './stages.ts';
@@ -18,10 +20,11 @@ const SERVICE = 'web';
 export const FUNCTION_TIMEOUT = Duration.seconds(10);
 
 // The p99 duration of the function, for the alarm. The README section "Where the latency threshold comes from"
-// has the numbers behind this value. A warm page took 54 to 709 ms. A cold chain took 3.8 to 4.3 seconds.
-// The value is about 3 times a warm page, and below a third of the timeout. So the alarm fires on a real
-// fault, and one cold chain fires it for one minute only. The alarm needs two minutes in a row.
-export const LATENCY_P99_THRESHOLD_MS = 1500;
+// has the numbers behind this value. With tracing and 512 MB, a warm page takes about 0.2 s and a cold chain
+// takes about 2.2 s. An API that hangs makes a page take 5 s, which is the limit of each call.
+// The value lies between the cold chain and the hung API, and below a third of the timeout.
+// So a cold chain does not fire the alarm, and a real fault does.
+export const LATENCY_P99_THRESHOLD_MS = 3000;
 
 export interface WebStackProps {
   readonly version: string;
@@ -43,8 +46,9 @@ export class WebStack extends Stack {
       entry: fileURLToPath(new URL('./web-handler.ts', import.meta.url)),
       runtime: Runtime.NODEJS_22_X,
       timeout: FUNCTION_TIMEOUT,
-      // Lambda sends a segment to X-Ray for each call. The README of lab-svc-core explains why this is the tracing choice.
-      tracing: Tracing.ACTIVE,
+      memorySize: FUNCTION_MEMORY_MB,
+      bundling: FUNCTION_BUNDLING,
+      // No active tracing of Lambda: OpenTelemetry makes the traces (lib/tracing.ts). The README explains why.
       environment: {
         // The version of the release is a part of the function, so each release publishes a new Lambda version.
         VERSION: props.version,
@@ -61,6 +65,11 @@ export class WebStack extends Stack {
         removalPolicy: RemovalPolicy.DESTROY,
       }),
     });
+
+    // The function sends its spans to the OTLP endpoint of X-Ray. The endpoint checks this permission.
+    // X-Ray actions do not support a resource, so the resource is *.
+    // Core turns on CloudWatch Transaction Search, which the endpoint needs. This stack does not touch it.
+    webFunction.addToRolePolicy(new PolicyStatement({ actions: ['xray:PutTraceSegments'], resources: ['*'] }));
 
     // The alias `live` is what the API calls. CodeDeploy moves the traffic of the alias to each new version.
     // The service counts a page with one error block as an error (see the README), so it sets serviceErrors.

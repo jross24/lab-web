@@ -2,6 +2,7 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from '
 import { instrument } from './instrument.ts';
 import type { Signals } from './instrument.ts';
 import { renderErrorPage, renderPage } from './page.tsx';
+import type { Tracing } from './tracing.ts';
 import { fetchAccount, fetchCatalogue, UpstreamError } from './upstream.ts';
 import type { FetchLike, Section } from './upstream.ts';
 
@@ -15,6 +16,8 @@ export interface HandlerOptions {
   readonly fetch?: FetchLike;
   readonly env?: Record<string, string | undefined>;
   readonly timeoutMs?: number;
+  // The default is the tracing of the function, which the wrapper in instrument.ts makes.
+  readonly tracing?: Tracing;
 }
 
 // The one place where the service fails on purpose. The stage config sets INJECT_FAULT for a stage.
@@ -68,7 +71,7 @@ export function createHandler(options: HandlerOptions = {}) {
       };
     }
 
-    const upstream = { fetch: options.fetch ?? fetch, timeoutMs: options.timeoutMs ?? TIMEOUT_MS };
+    const upstream = { fetch: options.fetch ?? fetch, timeoutMs: options.timeoutMs ?? TIMEOUT_MS, tracing: options.tracing };
     // Both calls start at once, so the slower API sets the time of the request.
     const [catalogue, account] = await Promise.all([
       section('catalogue', () => fetchCatalogue(urlOf(env, 'CATALOGUE_URL'), upstream)),
