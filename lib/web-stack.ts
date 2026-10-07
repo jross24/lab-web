@@ -2,7 +2,6 @@ import { fileURLToPath } from 'node:url';
 import { CfnOutput, Duration, RemovalPolicy, Stack } from 'aws-cdk-lib';
 import { CfnIntegration, HttpApi, HttpMethod } from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
-import { CfnDashboard } from 'aws-cdk-lib/aws-cloudwatch';
 import { CfnPermission, Runtime, Tracing } from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup } from 'aws-cdk-lib/aws-logs';
@@ -95,9 +94,8 @@ export class WebStack extends Stack {
       }
     }
 
-    // The shared dashboard is named lab-svc-<service>. The stack of this service is lab-web, so the dashboard is too.
-    const { dashboard } = new ServiceDashboard(this, 'Dashboard', { service: SERVICE, release, api });
-    (dashboard.node.defaultChild as CfnDashboard).dashboardName = 'lab-web';
+    // The shared dashboard code names the dashboard lab-svc-<service>, so this one is lab-svc-web.
+    new ServiceDashboard(this, 'Dashboard', { service: SERVICE, release, api });
 
     // A later phase reads this parameter to find the application, for example in an end-to-end test.
     new StringParameter(this, 'UrlParameter', {

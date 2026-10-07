@@ -120,7 +120,7 @@ This README does not copy them. It lists what is the same and what is different.
 - **A third alarm.** Core throws when it fails, so Lambda `Errors` sees its failures. Web can handle a failure and still answer. So the stack sets `serviceErrors` and gets `ServiceErrorsAlarm`. See "What an error means for web".
 - **A longer duration.** One page waits for two APIs, and each API waits for core. The latency threshold is 1500 ms, and not the 500 ms of core. See "Where the latency threshold comes from".
 - **A longer timeout.** The function times out after 10 seconds. Each call to an API has a limit of 5 seconds.
-- **The dashboard name.** The shared dashboard code names a dashboard `lab-svc-<service>`. The stack of this service is `lab-web`, so the stack sets the dashboard name `lab-web`. A unit test checks the name.
+- **The dashboard name.** The shared dashboard code names a dashboard `lab-svc-<service>`, so this dashboard is `lab-svc-web`. A unit test checks the name.
   The dashboard has one more graph than core: "Errors that the service counted, by version".
 - **The fault switch fails each route.** With `injectFault` on, `GET /health` throws too.
 
@@ -133,7 +133,7 @@ Do not redeploy version `0.1.0`. It has no alias. A redeploy of it would remove 
 
 ### How to watch a release
 
-Open CloudWatch in the console (region `eu-west-2`), then Dashboards, then `lab-web`.
+Open CloudWatch in the console (region `eu-west-2`), then Dashboards, then `lab-svc-web`.
 The core README shows the checks on the command line. Use the stack name `lab-web` in them.
 The function has the name that `aws cloudformation list-stack-resources --stack-name lab-web` shows.
 

@@ -454,9 +454,9 @@ describe('the dashboard', () => {
   const functionId = onlyKey(template.findResources('AWS::Lambda::Function'));
   const apiId = onlyKey(template.findResources('AWS::ApiGatewayV2::Api'));
 
-  it('is one dashboard with the fixed name lab-web', () => {
+  it('is one dashboard with the fixed name lab-svc-web', () => {
     template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
-    template.hasResourceProperties('AWS::CloudWatch::Dashboard', { DashboardName: 'lab-web' });
+    template.hasResourceProperties('AWS::CloudWatch::Dashboard', { DashboardName: 'lab-svc-web' });
   });
 
   it('has a text widget, five metric widgets and an alarm widget, all inside the 24 columns of the grid', () => {
