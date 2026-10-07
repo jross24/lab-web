@@ -122,7 +122,7 @@ This README does not copy them. It lists what is the same and what is different.
   The integration must not call the alias before both permissions exist. So the stack makes the integration depend on every permission of the API. Core has one route and one permission.
   Two unit tests prove this: `is the only target of the two invoke permissions of the API, one for each route` and `has each of the two invoke permissions before the integration calls the alias`.
 - **A third alarm.** Core throws when it fails, so Lambda `Errors` sees its failures. Web can handle a failure and still answer. So the stack sets `serviceErrors` and gets `ServiceErrorsAlarm`. See "What an error means for web".
-- **A longer duration.** One page waits for two APIs, and each API waits for core. The latency threshold is 1500 ms, and not the 500 ms of core. See "Where the latency threshold comes from".
+- **A longer duration.** One page waits for two APIs, and each API waits for core. The latency threshold is 3000 ms, and not the 1000 ms of core. See "Where the latency threshold comes from".
 - **A longer timeout.** The function times out after 10 seconds. Each call to an API has a limit of 5 seconds.
 - **Two client spans at the same time.** A page calls two services in parallel, so one request has two client spans. Catalogue and account make one call to core in a request. See "Tracing".
 - **No signed call to another service.** Web calls public APIs. The function signs only the export of its spans to X-Ray, and it needs no permission for the two APIs.
@@ -232,15 +232,25 @@ The alarm cannot tell if web or an API caused the errors. The field `degraded` o
 
 ## Where the latency threshold comes from
 
-The latency alarm fires when the p99 duration of the alias `live` is over **1500 ms** in 2 periods of 1 minute in a row.
+The latency alarm fires when the p99 duration of the alias `live` is over **3000 ms** in 2 periods of 1 minute in a row.
 The constant `LATENCY_P99_THRESHOLD_MS` in `lib/web-stack.ts` holds the value. The function times out at 10 seconds, and a third of that is 3333 ms.
 
 The duration of a page includes both calls to the APIs. The slower call sets the time. Each API call includes the call of that API to core.
 So one page is a chain of three functions in a row: web, catalogue or account, and core.
 
-The lab measured this with read-only calls: CloudWatch metrics, CloudWatch Logs Insights on the `REPORT` lines of the function, and public `GET /` requests.
-The times in the table are UTC, on 2026-10-06 and 2026-10-07. The p50 and p99 of the single requests come from the `REPORT` lines.
-The lab took them before the tracing change. Since then the function has 512 MB of memory, and each request waits for the export of its spans. See "Tracing".
+**With tracing and 512 MB (the design now).** The lab deployed the four services to its own account `lab-dev` and loaded the page. A cold page means that all four functions started cold.
+The core README has the full table for 128, 256, 512 and 1024 MB.
+
+| What | Result |
+| --- | --- |
+| The first request of web after a deployment (a cold chain), two samples | 2.0 s and 2.2 s |
+| A warm request of web, median | 223 ms |
+| The page seen from a laptop, cold, two samples | 2.67 s and 2.62 s |
+| The page seen from a laptop, warm, median of 5, two samples | 237 ms and 262 ms |
+| A page with an API that hangs | about 5 s: the limit of each call |
+
+**Before the tracing change (128 MB, Lambda active tracing).** The lab measured this with read-only calls in Test and Production on 2026-10-06 and 2026-10-07.
+The times are UTC. The p50 and p99 of the single requests come from the `REPORT` lines of the function.
 
 | Stage | When | What | Calls | p50 | p99 | Slowest |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -255,19 +265,13 @@ The lab took them before the tracing change. Since then the function has 512 MB 
 
 In Test, 11 more calls took between 1.9 and 2.3 seconds. The lab did not trace them. They fit a chain where only some functions started cold.
 
-A new execution environment of web has an init time of about 160 to 200 ms. That is small against the time of the chain.
+How the value follows from the numbers:
 
-How the value follows from the table:
-
-- A warm page takes 54 to 709 ms. The p99 of a warm page is 397 ms in Test and 709 ms in Production. Three times the mean of the two is about 1650 ms.
-- The value 1500 ms is a round value near that. It is above each warm page that the lab measured.
-- It is below a third of the timeout. So the alarm fires long before the function times out.
-
-**Why a threshold that fits a warm page fires on one cold chain.**
-
-- A cold chain takes 3.8 to 4.3 seconds. That is 2.5 to 2.9 times the threshold.
-- A minute with fewer than 100 calls has a p99 close to its slowest call. So one cold chain makes the whole minute slow.
-- No threshold below a third of the timeout (3333 ms) can ignore a cold chain. A higher threshold would also let a real fault pass, for example an API that answers just before its limit of 5 seconds.
+- A cold chain takes 2.0 to 2.2 seconds in web. The value 3000 ms is above that, so one cold chain does not fire the alarm.
+- A page with an API that hangs takes about 5 seconds. The value is below that, so a real fault fires the alarm.
+- The value is below a third of the timeout. So the alarm fires long before the function times out.
+- At 256 MB the cold chain takes 3.7 seconds, and it would fire the alarm. So the memory of 512 MB is part of this design.
+- The lab-dev account showed the danger of a lower value. With the threshold of 1500 ms, the alarm stayed in the state `ALARM` after a series of cold tests, and it stopped the next deployment of web.
 
 **Why the alarm still needs two periods in a row.**
 
@@ -275,8 +279,8 @@ How the value follows from the table:
 - If one period were enough, a release after an idle time could roll back with no fault.
 - Two periods in a row ignore one cold minute. The alarm still fires when the page stays slow for two minutes, because then one cold start is probably not the cause.
 
-Issue [lab-platform#17](https://github.com/jross24/lab-platform/issues/17) has the first observation of the cold chain (3.8 s).
-The lab did not yet run a canary under this threshold. Look at the graph "Duration of the alias live" after the first gradual releases, and adjust the value.
+Issue [lab-platform#17](https://github.com/jross24/lab-platform/issues/17) has the first observation of the cold chain (3.8 s before the tracing change).
+The lab did not yet run a canary under this threshold in Production. Look at the graph "Duration of the alias live" after the first gradual releases, and adjust the value.
 
 ## What a canary means for a web application
 

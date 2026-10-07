@@ -20,10 +20,11 @@ const SERVICE = 'web';
 export const FUNCTION_TIMEOUT = Duration.seconds(10);
 
 // The p99 duration of the function, for the alarm. The README section "Where the latency threshold comes from"
-// has the numbers behind this value. A warm page took 54 to 709 ms. A cold chain took 3.8 to 4.3 seconds.
-// The value is about 3 times a warm page, and below a third of the timeout. So the alarm fires on a real
-// fault, and one cold chain fires it for one minute only. The alarm needs two minutes in a row.
-export const LATENCY_P99_THRESHOLD_MS = 1500;
+// has the numbers behind this value. With tracing and 512 MB, a warm page takes about 0.2 s and a cold chain
+// takes about 2.2 s. An API that hangs makes a page take 5 s, which is the limit of each call.
+// The value lies between the cold chain and the hung API, and below a third of the timeout.
+// So a cold chain does not fire the alarm, and a real fault does.
+export const LATENCY_P99_THRESHOLD_MS = 3000;
 
 export interface WebStackProps {
   readonly version: string;

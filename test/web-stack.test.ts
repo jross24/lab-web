@@ -300,8 +300,9 @@ describe('the alarms', () => {
   it('keeps the latency threshold below a third of the timeout, and above the time of a warm page', () => {
     synth().template.hasResourceProperties('AWS::Lambda::Function', { Timeout: FUNCTION_TIMEOUT.toSeconds() });
     expect(FUNCTION_TIMEOUT.toSeconds()).toBe(10);
-    // The slowest warm page that the lab measured took 709 ms. See "Where the latency threshold comes from".
-    expect(LATENCY_P99_THRESHOLD_MS).toBeGreaterThanOrEqual(1000);
+    // The slowest cold chain that the lab measured with tracing and 512 MB took 2.2 s. A page with a hung API takes 5 s.
+    // See "Where the latency threshold comes from".
+    expect(LATENCY_P99_THRESHOLD_MS).toBeGreaterThanOrEqual(2500);
     expect(LATENCY_P99_THRESHOLD_MS).toBeLessThanOrEqual(FUNCTION_TIMEOUT.toMilliseconds() / 3);
   });
 
