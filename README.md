@@ -72,11 +72,12 @@ So the templates name no account, and one `cdk synth` still serves each account.
 Both APIs are public, so the function sends plain requests to them. It signs nothing and needs no `execute-api` permission.
 Its role has one statement, for the traces. See "Tracing".
 
-The stack also writes its own address.
+The stack also writes its own address and its own version.
 
 | Parameter | Value |
 | --- | --- |
 | `/lab/web/url` | The base URL of this application. A later end-to-end test reads it. |
+| `/lab/web/version` | The version of web that the stack runs. The release workflow of lab-workflows reads it, to check the deployment order and the set of tested versions. |
 
 The stack also sets `NODE_ENV=production` on the function. Lambda does not set it.
 Without it, React runs its slow development build.
@@ -405,7 +406,7 @@ The `Dev` stage has the alias, the deployment group, the alarms and the dashboar
 | `lib/app.ts` | Reads the context values and makes the stages. |
 | `lib/stages.ts` | The typed settings of each stage: log retention, the release type and the fault switch. |
 | `lib/web-stage.ts` | The CDK stage. |
-| `lib/web-stack.ts` | The stack: SSM lookups, function (512 MB, ES module bundle, one X-Ray statement), alias and release, API, dashboard, SSM parameter, outputs. |
+| `lib/web-stack.ts` | The stack: SSM lookups, function (512 MB, ES module bundle, one X-Ray statement), alias and release, API, dashboard, SSM parameters, outputs. |
 | `lib/gradual-release.ts` | **Copy of core.** The alias, the deployment group, the three alarms and the `Release` type. |
 | `lib/service-dashboard.ts` | **Copy of core.** The dashboard of a stage. |
 | `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | **Copy of core.** The wrapper of the handler (it makes the server span), the log line and the metric line. |
