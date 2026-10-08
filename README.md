@@ -115,12 +115,12 @@ This README does not copy them. It lists what is the same and what is different.
 - Nine files are exact copies of the files in core. Change them in core, then copy them again.
   - The release and the observability: `lib/gradual-release.ts`, `lib/service-dashboard.ts`, `lib/instrument.ts`, `lib/logger.ts` and `lib/metrics.ts`.
   - The tracing: `lib/tracing.ts`, `lib/xray-exporter.ts`, `lib/sigv4.ts` and `lib/function-defaults.ts`.
-  - The tests of the tracing files are copies too: `test/tracing.test.ts`, `test/xray-exporter.test.ts` and `test/sigv4.test.ts`.
+  - The tests of the tracing files are copies too: `test/tracing.test.ts`, `test/xray-exporter.test.ts`, `test/sigv4.test.ts` and `test/function-defaults.test.ts`.
 - The function has the alias `live`. The API calls the alias, and not the function.
 - A CodeDeploy deployment group moves the traffic of the alias to each new version. If an alarm fires, it stops and rolls the traffic back.
 - Each request writes one line of JSON to the log and one metric line (embedded metric format). The metric has the dimensions `service` and `version`.
 - OpenTelemetry makes the traces, and Lambda active tracing is off. The log line carries the trace ID in the form of X-Ray. See "Tracing".
-- The stage config has the settings `release`, `injectFault` and `forwardFlagOverride`. A unit test compares the templates of the three stages.
+- The stage config has the settings `release`, `injectFault`, `forwardFlagOverride` and `traceSampleRatio`. A unit test compares the templates of the three stages.
 
 ### What is different from core
 
@@ -154,6 +154,23 @@ The function has the name that `aws cloudformation list-stack-resources --stack-
 One trace follows a page request from web to catalogue or account, and then to core. OpenTelemetry makes the trace.
 The SDK is in the bundle of the function. There is no Lambda layer, and Lambda active tracing is off.
 The [Tracing section of the lab-svc-core README](https://github.com/jross24/lab-svc-core#tracing) has the decision, the measurements and the trade-off. This README does not repeat them.
+
+### The export stays on the request path, and the sampling ratio
+
+The owner decided that the export of the spans stays on the request path, with 512 MB of memory ([lab-platform#28](https://github.com/jross24/lab-platform/issues/28)).
+The answer of a request waits for one signed call to X-Ray. At 512 MB this costs about 35 ms for a warm request, and about 450 ms for the first request of a new environment.
+The lab accepts this cost, because the other ways cost more than they give here. The cost table for 128 to 1024 MB is in the [Tracing section of the lab-svc-core README](https://github.com/jross24/lab-svc-core#tracing).
+
+What changed is the sampling. A request that is not sampled makes no call to X-Ray, so it does not pay the cost.
+
+**How to set the ratio.** `traceSampleRatio` in `lib/stages.ts` is a number from 0 to 1 for each stage. The value 1 samples all requests, and every stage has it today.
+`lib/web-stack.ts` writes the number into the variable `TRACE_SAMPLE_RATIO` of the function (`tracingEnvironment` in `lib/function-defaults.ts`). `lib/tracing.ts` reads it.
+To change the ratio, edit the number and open a pull request. The pipeline deploys it like any other change. A number outside 0 to 1 stops `cdk synth`.
+
+The sampler is parent based. A request with a `traceparent` header follows its caller: a sampled parent is always followed, and a parent that is not sampled never is.
+A request with no parent is sampled by its trace ID, for the share that the ratio names. Web starts the trace of a page request, so the ratio of web decides for the whole chain. Catalogue, account and core follow the header that web sends.
+The log line keeps the trace ID of a request that is not sampled, but X-Ray then has no trace for this ID.
+The unit tests in `test/tracing.test.ts` prove the rules: ratio 0 gives no call to the exporter, and ratio 1 gives one.
 
 ### What the service records
 
@@ -365,11 +382,13 @@ Each stage holds one stack, `lab-web`. The file `lib/stages.ts` holds the settin
 | `release` | all at once | all at once | canary: 10 percent, then 100 percent after 5 minutes |
 | `injectFault` | false | false | false |
 | `forwardFlagOverride` | true | false | false |
+| `traceSampleRatio` | 1 | 1 | 1 |
 
 Every stage has the same resources: the same alias, the same deployment group, the same alarms and the same dashboard.
 Only the values in the table differ. So Test runs what Production runs. A unit test checks this: it compares the three templates.
 
 `injectFault` is a device for the release drill. See "The Production drill for web". No stage sets it in `main`.
+`traceSampleRatio` is the share of new traces that are sampled. See "The export stays on the request path, and the sampling ratio" in the Tracing section.
 
 The code names no AWS account and no region. A stack goes to the account of the credentials that deploy it.
 All three stages use the same bundled Lambda code.
@@ -455,5 +474,5 @@ The `Dev` stage has the alias, the deployment group, the alarms and the dashboar
 | `lib/upstream.ts` | Calls the two APIs, with a time limit and a client span, and checks the answers. |
 | `lib/page.tsx` | The React components. They are pure: data in, markup out. |
 | `expectations.json` | The fields that the page reads from catalogue and account. `test/expectations.test.ts` checks that the parsers need exactly these fields. |
-| `test/` | The unit tests (vitest). `tracing.test.ts`, `xray-exporter.test.ts`, `sigv4.test.ts`, `contract-schema.test.ts` and `support/contract-schema.ts` are copies of the files of core. |
+| `test/` | The unit tests (vitest). `tracing.test.ts`, `xray-exporter.test.ts`, `sigv4.test.ts`, `function-defaults.test.ts`, `contract-schema.test.ts` and `support/contract-schema.ts` are copies of the files of core. |
 | `.github/workflows/` | Three small files that call the workflows in lab-workflows. |

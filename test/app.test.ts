@@ -220,15 +220,27 @@ describe('the deployment configuration of each stage', () => {
     );
   });
 
+  it('gives the function of each stage the sampling ratio of the stage config', () => {
+    const configs: Record<string, { readonly traceSampleRatio: number }> = { ...STAGES };
+    for (const [name, config] of Object.entries(configs)) {
+      const stack = assembly.stacksRecursively.find((candidate) => candidate.hierarchicalId.startsWith(`${name}/`));
+      const ratios = Object.values(templateOf(stack as CloudFormationStackArtifact).Resources)
+        .map((resource) => (resource.Properties as { Environment?: { Variables?: Record<string, string> } } | undefined)?.Environment?.Variables?.TRACE_SAMPLE_RATIO)
+        .filter((ratio) => ratio !== undefined);
+      expect(ratios, name).toEqual([String(config.traceSampleRatio)]);
+    }
+  });
+
   it('is the only difference between the templates of the stages, apart from the stage config', () => {
     // Test must exercise the resources that Production runs. So the stages must differ only in the stage config:
-    // the log retention, the deployment configuration, the switch of the flag override, and the fault switch of the drill with the id of the
+    // the log retention, the deployment configuration, the sampling ratio, the switch of the flag override, and the fault switch of the drill with the id of the
     // Lambda version that the switch changes.
     const normalised = (stage: string): string =>
       JSON.stringify(stackOf(stage).template)
         .replace(/"RetentionInDays":[0-9]+/g, '"RetentionInDays":0')
         .replace(/CodeDeployDefault\.Lambda[A-Za-z0-9]+/g, 'CodeDeployDefault.Lambda')
         .replace(/"INJECT_FAULT":"true",/g, '')
+        .replace(/"TRACE_SAMPLE_RATIO":"[^"]*"/g, '"TRACE_SAMPLE_RATIO":"1"')
         .replace(/"FORWARD_FLAG_OVERRIDE":"true",/g, '')
         .replace(/CurrentVersion[0-9A-F]{8}[0-9a-f]{32}/g, 'CurrentVersion');
     expect(normalised('Staging')).toBe(normalised('Test'));

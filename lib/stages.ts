@@ -11,6 +11,9 @@ export interface StageConfig {
   // When it is true, the page passes the request header x-lab-flags to the catalogue request. That header overrides
   // a feature flag for one request, and only the catalogue of Test accepts it. See "Feature flags" in the README.
   readonly forwardFlagOverride: boolean;
+  // The share of the new traces that are sampled, from 0 to 1. A request with a traceparent header follows its caller.
+  // 1 samples all requests. See "Tracing" in the README for the cost.
+  readonly traceSampleRatio: number;
 }
 
 // The pipeline deploys these stages. Each stage goes to its own AWS account.
@@ -20,18 +23,21 @@ export const STAGES = {
     release: { kind: 'allAtOnce' },
     injectFault: false,
     forwardFlagOverride: true,
+    traceSampleRatio: 1,
   },
   Staging: {
     logRetentionDays: RetentionDays.ONE_WEEK,
     release: { kind: 'allAtOnce' },
     injectFault: false,
     forwardFlagOverride: false,
+    traceSampleRatio: 1,
   },
   Production: {
     logRetentionDays: RetentionDays.ONE_MONTH,
     release: { kind: 'canary', percent: 10, minutes: 5 },
     injectFault: false,
     forwardFlagOverride: false,
+    traceSampleRatio: 1,
   },
 } as const satisfies Record<string, StageConfig>;
 
@@ -41,4 +47,5 @@ export const DEV_STAGE: StageConfig = {
   release: { kind: 'allAtOnce' },
   injectFault: false,
   forwardFlagOverride: true,
+  traceSampleRatio: 1,
 };
