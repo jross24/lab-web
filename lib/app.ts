@@ -1,4 +1,5 @@
 import { App } from 'aws-cdk-lib';
+import { parseNamespace } from './namespace.ts';
 import { WebStage } from './web-stage.ts';
 import { DEV_STAGE, STAGES } from './stages.ts';
 
@@ -23,14 +24,32 @@ function readDev(app: App): boolean {
   throw new Error(`Context value dev must be true or false. Got ${JSON.stringify(dev)}. Example: -c dev=true`);
 }
 
-// Context values: version (default 0.0.0-dev) and dev (default false).
+// Reads one of the namespace context values: namespace, catalogueNamespace or accountNamespace.
+function readNamespace(app: App, dev: boolean, contextValue: string): string | undefined {
+  const namespace: unknown = app.node.tryGetContext(contextValue);
+  if (namespace === undefined) return undefined;
+  // A pipeline stage has fixed names and reads the baseline parameters. A namespace there would be an error that
+  // nobody sees, so refuse it.
+  if (!dev) {
+    throw new Error(`Context value ${contextValue} works only with dev=true. Example: -c dev=true -c ${contextValue}=my-test`);
+  }
+  return parseNamespace(namespace, contextValue);
+}
+
+// Context values: version (default 0.0.0-dev), dev (default false), and only with dev=true these three:
+// namespace (names of the copy, default none), catalogueNamespace and accountNamespace (which preview of a provider the
+// copy reads, default none: the baseline copy of the provider).
 export function createApp(context?: Record<string, unknown>): App {
   const app = new App({ context });
   const version = readVersion(app);
+  const dev = readDev(app);
+  const namespace = readNamespace(app, dev, 'namespace');
+  const catalogueNamespace = readNamespace(app, dev, 'catalogueNamespace');
+  const accountNamespace = readNamespace(app, dev, 'accountNamespace');
 
-  if (readDev(app)) {
+  if (dev) {
     // Only the Dev stage, so a laptop cannot deploy a pipeline stage by accident.
-    new WebStage(app, 'Dev', { version, config: DEV_STAGE });
+    new WebStage(app, 'Dev', { version, config: DEV_STAGE, namespace, catalogueNamespace, accountNamespace });
     return app;
   }
 
