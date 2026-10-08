@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { renderErrorPage, renderPage } from '../lib/page.tsx';
 import type { AccountData, CatalogueData, Section } from '../lib/upstream.ts';
@@ -123,5 +124,46 @@ describe('the error page for two failed APIs', () => {
     expect(textsOf(html, 'product')).toEqual([]);
     expect(textsOf(html, 'profile-name')).toEqual([]);
     expect(textsOf(html, 'web-version')).toEqual([]);
+  });
+});
+
+describe('the discount on the page', () => {
+  const withProducts = (products: CatalogueData['products']): Section<CatalogueData> => ok({ ...catalogueBody, products });
+  const render = (products: CatalogueData['products']) =>
+    renderPage({ version: WEB_VERSION, catalogue: withProducts(products), account });
+
+  it('is byte for byte the page of before when no product has a discount', () => {
+    // test/golden/page-without-discount.html is the output of the page before the discount existed.
+    const golden = readFileSync(new URL('./golden/page-without-discount.html', import.meta.url), 'utf8');
+    expect(renderPage({ version: WEB_VERSION, catalogue, account })).toBe(golden);
+  });
+
+  it('shows no discount element when no product has a discount', () => {
+    expect(renderPage({ version: WEB_VERSION, catalogue, account })).not.toContain('data-testid="discount"');
+  });
+
+  it('shows the discount beside the product that has one, and only there', () => {
+    const html = render([
+      { id: 'product-1', name: 'First product', price: 10, discount: 10 },
+      { id: 'product-2', name: 'Second product', price: 20 },
+    ]);
+    expect(textsOf(html, 'discount')).toEqual(['10% off']);
+    expect(html).toContain(
+      '<li data-testid="product"><span>First product</span> <span>10</span> <span data-testid="discount">10% off</span></li>',
+    );
+    expect(html).toContain('<li data-testid="product"><span>Second product</span> <span>20</span></li>');
+  });
+
+  it('shows one discount for each product that has one', () => {
+    const html = render([
+      { id: 'product-1', name: 'First product', price: 10, discount: 10 },
+      { id: 'product-2', name: 'Second product', price: 20, discount: 25.5 },
+    ]);
+    expect(textsOf(html, 'discount')).toEqual(['10% off', '25.5% off']);
+  });
+
+  it('shows a discount of 0, because the field is present', () => {
+    const html = render([{ id: 'product-1', name: 'First product', price: 10, discount: 0 }]);
+    expect(textsOf(html, 'discount')).toEqual(['0% off']);
   });
 });

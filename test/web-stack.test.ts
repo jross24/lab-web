@@ -12,7 +12,7 @@ const CANARY: StageConfig['release'] = { kind: 'canary', percent: 10, minutes: 5
 function synth(version = '1.2.3', config: Partial<StageConfig> = {}) {
   const stack = new WebStack(new App(), 'Web', {
     version,
-    config: { logRetentionDays: RetentionDays.ONE_WEEK, release: ALL_AT_ONCE, injectFault: false, ...config },
+    config: { logRetentionDays: RetentionDays.ONE_WEEK, release: ALL_AT_ONCE, injectFault: false, forwardFlagOverride: false, ...config },
   });
   return { stack, template: Template.fromStack(stack) };
 }
@@ -431,6 +431,33 @@ describe('tracing', () => {
   it('does not touch CloudWatch Transaction Search, which is a setting of the whole account and belongs to core', () => {
     template.resourceCountIs('AWS::XRay::TransactionSearchConfig', 0);
     template.resourceCountIs('AWS::Logs::ResourcePolicy', 0);
+  });
+});
+
+describe('the flag override switch', () => {
+  const variablesOf = (template: Template) =>
+    (
+      Object.values(template.findResources('AWS::Lambda::Function')) as {
+        Properties: { Environment: { Variables: Record<string, unknown> } };
+      }[]
+    )[0]?.Properties.Environment.Variables;
+
+  it('sets no FORWARD_FLAG_OVERRIDE variable when the stage config does not forward the override', () => {
+    expect(variablesOf(synth().template)).not.toHaveProperty('FORWARD_FLAG_OVERRIDE');
+  });
+
+  it('sets FORWARD_FLAG_OVERRIDE to true when the stage config forwards the override, and keeps the other variables', () => {
+    synth('1.2.3', { forwardFlagOverride: true }).template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: {
+        Variables: {
+          FORWARD_FLAG_OVERRIDE: 'true',
+          VERSION: '1.2.3',
+          NODE_ENV: 'production',
+          CATALOGUE_URL: Match.anyValue(),
+          ACCOUNT_URL: Match.anyValue(),
+        },
+      },
+    });
   });
 });
 

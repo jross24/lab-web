@@ -12,6 +12,8 @@ export interface Product {
   readonly id: string;
   readonly name: string;
   readonly price: number;
+  // A percentage. The catalogue sends it only while the flag show-discounts is on, so it is optional.
+  readonly discount?: number;
 }
 
 export interface CatalogueData {
@@ -67,7 +69,11 @@ function productOf(value: unknown): Product | undefined {
   if (typeof product?.id !== 'string' || typeof product.name !== 'string' || typeof product.price !== 'number') {
     return undefined;
   }
-  return { id: product.id, name: product.name, price: product.price };
+  const base = { id: product.id, name: product.name, price: product.price };
+  // An absent discount adds no key, so a product without a discount looks as it did before.
+  if (product.discount === undefined) return base;
+  // A discount of another type breaks the contract of the catalogue, like a price of another type.
+  return typeof product.discount === 'number' ? { ...base, discount: product.discount } : undefined;
 }
 
 function catalogueOf(body: unknown): CatalogueData | undefined {
@@ -95,12 +101,12 @@ function accountOf(body: unknown): AccountData | undefined {
 // so the request has no signature and the header needs no special order.
 // The page starts both calls at the same time. Each call reads the server span as its parent, so the two
 // client spans are siblings.
-async function getJson(url: string, options: UpstreamOptions): Promise<unknown> {
+async function getJson(url: string, options: UpstreamOptions, headers?: Record<string, string>): Promise<unknown> {
   const signal = AbortSignal.timeout(options.timeoutMs);
   const tracing = options.tracing ?? currentTracing();
   let response: Response;
   try {
-    response = await tracing.fetch(options.fetch, url, { signal });
+    response = await tracing.fetch(options.fetch, url, headers ? { signal, headers } : { signal });
   } catch (cause) {
     throw new UpstreamError(signal.aborted ? 'the request timed out' : 'the request failed', { cause });
   }
@@ -117,9 +123,13 @@ function join(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, '')}${path}`;
 }
 
-// Calls GET /products of the catalogue API.
-export async function fetchCatalogue(baseUrl: string, options: UpstreamOptions): Promise<CatalogueData> {
-  const data = catalogueOf(await getJson(join(baseUrl, '/products'), options));
+// Calls GET /products of the catalogue API. The headers, if any, go on this request only.
+export async function fetchCatalogue(
+  baseUrl: string,
+  options: UpstreamOptions,
+  headers?: Record<string, string>,
+): Promise<CatalogueData> {
+  const data = catalogueOf(await getJson(join(baseUrl, '/products'), options, headers));
   if (!data) throw new UpstreamError(UNDERSTOOD);
   return data;
 }

@@ -28,6 +28,27 @@ function failOnPurpose(): void {
   }
 }
 
+// The request header that overrides a feature flag for one request. Only the catalogue of Test acts on it.
+const FLAG_OVERRIDE_HEADER = 'x-lab-flags';
+
+// The strict shape of the header: one or more "name=on" or "name=off" parts, separated by commas, with no space.
+// The name rules are those of the catalogue. Anything else is dropped, so a stray value never reaches the catalogue.
+const FLAG_OVERRIDE = /^[a-z][a-zA-Z0-9_-]{0,63}=(?:on|off)(?:,[a-z][a-zA-Z0-9_-]{0,63}=(?:on|off))*$/;
+const MAX_FLAG_OVERRIDE_LENGTH = 512;
+
+// The headers for the catalogue request. The stage setting forwardFlagOverride sets FORWARD_FLAG_OVERRIDE to "true".
+// Where it is not exactly "true", the function never reads the incoming header. API Gateway sends header names in
+// lower case. A valid header goes on unchanged, and any other value is dropped.
+function catalogueHeaders(
+  env: Record<string, string | undefined>,
+  incoming: Record<string, string | undefined> | undefined,
+): Record<string, string> | undefined {
+  if (env.FORWARD_FLAG_OVERRIDE !== 'true') return undefined;
+  const value = incoming?.[FLAG_OVERRIDE_HEADER];
+  if (value === undefined || value.length > MAX_FLAG_OVERRIDE_LENGTH || !FLAG_OVERRIDE.test(value)) return undefined;
+  return { [FLAG_OVERRIDE_HEADER]: value };
+}
+
 // Runs one call to an API. A failure becomes a section with a safe reason. The log has the full error.
 async function section<T>(name: string, call: () => Promise<T>): Promise<Section<T>> {
   try {
@@ -56,7 +77,7 @@ function degradedReason(catalogue: Section<unknown>, account: Section<unknown>):
 // The caller can give `signals`. The handler then sets `signals.degraded` for a page with one error block.
 // The page has the status 200, so the status alone does not show the failure. See Signals in instrument.ts.
 export function createHandler(options: HandlerOptions = {}) {
-  return async (event: Pick<APIGatewayProxyEventV2, 'rawPath'>, signals: Signals = {}): Promise<WebResponse> => {
+  return async (event: Pick<APIGatewayProxyEventV2, 'rawPath'> & Partial<Pick<APIGatewayProxyEventV2, 'headers'>>, signals: Signals = {}): Promise<WebResponse> => {
     // This comes first, so an injected fault fails each route, also GET /health.
     failOnPurpose();
     const env = options.env ?? process.env;
@@ -74,7 +95,9 @@ export function createHandler(options: HandlerOptions = {}) {
     const upstream = { fetch: options.fetch ?? fetch, timeoutMs: options.timeoutMs ?? TIMEOUT_MS, tracing: options.tracing };
     // Both calls start at once, so the slower API sets the time of the request.
     const [catalogue, account] = await Promise.all([
-      section('catalogue', () => fetchCatalogue(urlOf(env, 'CATALOGUE_URL'), upstream)),
+      section('catalogue', () =>
+        fetchCatalogue(urlOf(env, 'CATALOGUE_URL'), upstream, catalogueHeaders(env, event.headers)),
+      ),
       section('account', () => fetchAccount(urlOf(env, 'ACCOUNT_URL'), upstream)),
     ]);
 

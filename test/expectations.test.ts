@@ -33,7 +33,7 @@ const CASES = [
     parsed: {
       version: 'text',
       core: { version: 'text', itemCount: 1.5 },
-      products: [{ id: 'text', name: 'text', price: 1.5 }],
+      products: [{ id: 'text', name: 'text', price: 1.5, discount: 1.5 }],
     },
   },
   {
@@ -99,6 +99,25 @@ describe('expectations.json', () => {
     it('lists the fields that the parser reads, and every one of them is required', () => {
       expect(requiredPaths(schema)).toEqual(required);
     });
+  });
+});
+
+describe('the optional discount in the expectations', () => {
+  const schema = schemaOf('catalogue', 'GET /products');
+  const product = (schema.properties?.products?.items ?? { type: 'object' }) as Schema;
+  const call = (body: unknown) => fetchCatalogue('https://catalogue.example.test', options(body));
+
+  it('lists products[].discount as a number that is not required', () => {
+    expect(product.properties?.discount?.type).toBe('number');
+    expect(product.required).not.toContain('discount');
+  });
+
+  it('copes with a product that has no discount, and keeps no discount key for it', async () => {
+    const body = sample(schema) as { products: Record<string, unknown>[] };
+    delete body.products[0]?.discount;
+    expect(validate(schema, body)).toEqual([]);
+    const data = await call(body);
+    expect(data.products).toEqual([{ id: 'text', name: 'text', price: 1.5 }]);
   });
 });
 
