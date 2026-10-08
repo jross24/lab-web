@@ -5,6 +5,7 @@ import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations
 import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import { CfnPermission, Runtime } from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import type { BundlingOptions } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup } from 'aws-cdk-lib/aws-logs';
 import { StringParameter } from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
@@ -25,6 +26,19 @@ export const FUNCTION_TIMEOUT = Duration.seconds(10);
 // The value lies between the cold chain and the hung API, and below a third of the timeout.
 // So a cold chain does not fire the alarm, and a real fault does.
 export const LATENCY_P99_THRESHOLD_MS = 3000;
+
+// The bundling options of web: the shared options and one more. React picks its development or its production build
+// at run time from process.env.NODE_ENV. The define gives esbuild the value at build time, so esbuild keeps only the
+// production build and drops the development build. This makes the bundle about 1 MB smaller (the README has the numbers).
+// The value uses single quotes on purpose. CDK gives the define to esbuild as one argument of a command, and on Windows
+// that command runs in Windows PowerShell 5.1. This shell removes the double quotes of the argument, so esbuild would
+// read "production" as the name of a variable and the function would fail at run time. esbuild accepts 'production'
+// as a string too, and no shell changes a single quote. On Linux, CDK starts esbuild without a shell. The test in
+// test/app.test.ts reads the real bundle, so a define that does not reach esbuild fails the build.
+export const WEB_BUNDLING: BundlingOptions = {
+  ...FUNCTION_BUNDLING,
+  define: { 'process.env.NODE_ENV': "'production'" },
+};
 
 export interface WebStackProps {
   readonly version: string;
@@ -47,7 +61,7 @@ export class WebStack extends Stack {
       runtime: Runtime.NODEJS_22_X,
       timeout: FUNCTION_TIMEOUT,
       memorySize: FUNCTION_MEMORY_MB,
-      bundling: FUNCTION_BUNDLING,
+      bundling: WEB_BUNDLING,
       // No active tracing of Lambda: OpenTelemetry makes the traces (lib/tracing.ts). The README explains why.
       environment: {
         // The version of the release is a part of the function, so each release publishes a new Lambda version.
@@ -56,9 +70,8 @@ export class WebStack extends Stack {
         ...(props.config.forwardFlagOverride ? { FORWARD_FLAG_OVERRIDE: 'true' } : {}),
         CATALOGUE_URL: catalogueUrl,
         ACCOUNT_URL: accountUrl,
-        // React picks its development or production build from NODE_ENV at run time. Lambda does not set it.
-        // The development build is much slower. (A build-time esbuild define would do the same,
-        // but CDK passes it through a shell, and the shell removes the quotes of the value.)
+        // The bundle holds only the production build of React (WEB_BUNDLING), and esbuild replaces each
+        // process.env.NODE_ENV in it. This value stays for code outside the bundle. Lambda does not set NODE_ENV.
         NODE_ENV: 'production',
       },
       logGroup: new LogGroup(this, 'WebFunctionLogs', {

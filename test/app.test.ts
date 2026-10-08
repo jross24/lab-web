@@ -111,12 +111,27 @@ describe('the bundled Lambda code', () => {
 
   it('has little OpenTelemetry code, because esbuild removed the code that no request uses', () => {
     // As CommonJS, the OpenTelemetry packages alone are 641 KB. The module entries of the packages let esbuild remove most of it.
-    // The test does not measure the whole file. React is in the file too, and it is more than 1 MB: React picks its
-    // development or its production build at run time, so esbuild keeps both.
+    // The test does not measure the whole file. React is in the file too. It is large, but the next test checks that
+    // it is the production build only.
     const bundle = readFileSync(join(bundleDirectory(), 'index.mjs'), 'utf8');
     const openTelemetry = bytesFrom(bundle, 'node_modules/@opentelemetry/');
     expect(openTelemetry, 'the comments that name the files of the bundle').toBeGreaterThan(0);
     expect(openTelemetry).toBeLessThan(200_000);
+  });
+
+  // React picks its development or its production build at run time from process.env.NODE_ENV. The development build
+  // is large and slow. A define of process.env.NODE_ENV at build time lets esbuild drop it. The stack sets the define
+  // (WEB_BUNDLING in lib/web-stack.ts). When the define does not reach esbuild, the bundle keeps both builds.
+  it('holds the production build of React and not the development build', () => {
+    const bundle = readFileSync(join(bundleDirectory(), 'index.mjs'), 'utf8');
+    // esbuild writes a comment with the path before the code of each file. A development build has "development" in its name.
+    const files = bundle.split('\n').filter((line) => /^\/\/ node_modules\/\S+\.js$/.test(line));
+    const production = files.filter((line) => line.includes('.production.'));
+    const development = files.filter((line) => line.includes('.development.'));
+    expect(production, 'the comments that name the production files of React').not.toEqual([]);
+    expect(development).toEqual([]);
+    // Only the development build of React has this warning. The production build has error codes instead of text.
+    expect(bundle).not.toContain('Each child in a list should have a unique');
   });
 });
 

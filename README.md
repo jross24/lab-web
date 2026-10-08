@@ -81,7 +81,7 @@ The stack also writes its own address and its own version.
 | `/lab/web/version` | The version of web that the stack runs. The release workflow of lab-workflows reads it, to check the deployment order and the set of tested versions. |
 
 The stack also sets `NODE_ENV=production` on the function. Lambda does not set it.
-Without it, React runs its slow development build.
+This value is for code outside the bundle. The bundle gets its own value at build time (see "What the stack adds" in the section "Tracing").
 
 ## Deployment order: core, then catalogue and account, then web
 
@@ -194,7 +194,20 @@ The OTLP endpoint of X-Ray needs CloudWatch Transaction Search. The stack of cor
 - **512 MB of memory.** Lambda gives CPU in proportion to memory. In the measurement of core, the first request spent 1.9 s on the connection to the trace endpoint at 128 MB, and 0.45 s at 512 MB.
   The constant `FUNCTION_MEMORY_MB` in `lib/function-defaults.ts` holds the value.
 - **An ES module bundle.** esbuild writes `index.mjs`, and it reads the `module` entry of each package. So it removes the code that no request uses.
-  The OpenTelemetry code in the bundle is about 97 KB. The whole file is 1.6 MB because React is in it. React was 1.5 MB of the file before the tracing change.
+  The OpenTelemetry code in the bundle is about 97 KB.
+- **Only the production build of React.** React picks its development build or its production build at run time, from `process.env.NODE_ENV`.
+  esbuild cannot know the value, so it used to keep both builds. The bundle was 1.62 MB, and React was 1.50 MB of it.
+  Now the constant `WEB_BUNDLING` in `lib/web-stack.ts` adds the esbuild option `define` for `process.env.NODE_ENV`.
+  esbuild replaces each `process.env.NODE_ENV` with the string `'production'`, sees which branches never run, and drops the development build.
+  The bundle is now 0.72 MB (722 KB), and React is 0.60 MB of it. The zip of the code went from 295 KB to about 132 KB.
+  The measurement of the cold start is in [lab-platform#29](https://github.com/jross24/lab-platform/issues/29).
+  - **Why the value has single quotes.** CDK gives each esbuild option to a command as one argument.
+    On Windows, CDK runs that command in Windows PowerShell 5.1, and this shell removes the double quotes of an argument.
+    With `'"production"'` esbuild then read `production` as the name of a variable. The build passed with a warning, and the function would fail at run time with a `ReferenceError`.
+    esbuild accepts `'production'` as a string literal too, and no shell changes a single quote. On Linux, CDK starts esbuild without a shell, so the CI runner and a developer on Windows get the same bundle.
+  - **How the build checks it.** The test `the bundled Lambda code` in `test/app.test.ts` reads the real `index.mjs`.
+    It fails when a file `react*.development.js` is in the bundle, when no `.production.` file of React is in it, or when the bundle has the text that only the development build of React has.
+    The test `the bundling options of the function` in `test/web-stack.test.ts` checks that esbuild turns the value into the string `production`, and that the value has no double quote and no backslash.
 - **No Lambda layer and no Lambda active tracing.** A second, unlinked trace would appear for each call with active tracing.
 
 The function sends the spans at the end of each request, because Lambda freezes the function when the handler returns.
@@ -405,7 +418,7 @@ npm run synth
 ```
 
 The tests and the synthesis do not need AWS credentials or a network.
-The tests of the bundle read the synthesized `index.mjs`. They check the file name and the size of the OpenTelemetry code in it.
+The tests of the bundle read the synthesized `index.mjs`. They check the file name, the size of the OpenTelemetry code in it, and that it holds the production build of React only.
 
 ## Deploy to a personal account
 
@@ -430,7 +443,7 @@ The `Dev` stage has the alias, the deployment group, the alarms and the dashboar
 | `lib/app.ts` | Reads the context values and makes the stages. |
 | `lib/stages.ts` | The typed settings of each stage: log retention, the release type and the fault switch. |
 | `lib/web-stage.ts` | The CDK stage. |
-| `lib/web-stack.ts` | The stack: SSM lookups, function (512 MB, ES module bundle, one X-Ray statement), alias and release, API, dashboard, SSM parameters, outputs. |
+| `lib/web-stack.ts` | The stack: SSM lookups, function (512 MB, ES module bundle with the production build of React only, one X-Ray statement), alias and release, API, dashboard, SSM parameters, outputs. |
 | `lib/gradual-release.ts` | **Copy of core.** The alias, the deployment group, the three alarms and the `Release` type. |
 | `lib/service-dashboard.ts` | **Copy of core.** The dashboard of a stage. |
 | `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | **Copy of core.** The wrapper of the handler (it makes the server span), the log line and the metric line. |
