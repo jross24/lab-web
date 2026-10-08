@@ -53,6 +53,7 @@ export class WebStack extends Stack {
         // The version of the release is a part of the function, so each release publishes a new Lambda version.
         VERSION: props.version,
         ...(props.config.injectFault ? { INJECT_FAULT: 'true' } : {}),
+        ...(props.config.forwardFlagOverride ? { FORWARD_FLAG_OVERRIDE: 'true' } : {}),
         CATALOGUE_URL: catalogueUrl,
         ACCOUNT_URL: accountUrl,
         // React picks its development or production build from NODE_ENV at run time. Lambda does not set it.

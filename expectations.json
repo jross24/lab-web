@@ -28,7 +28,8 @@
                   "properties": {
                     "id": { "type": "string", "description": "The key of the line." },
                     "name": { "type": "string", "description": "Shown in the line." },
-                    "price": { "type": "number", "description": "Shown in the line." }
+                    "price": { "type": "number", "description": "Shown in the line." },
+                    "discount": { "type": "number", "description": "Optional. The catalogue sends it only while a feature flag is on. When it is present, the page shows it as a percentage beside the product. The parser rejects a discount that is not a number." }
                   }
                 }
               }

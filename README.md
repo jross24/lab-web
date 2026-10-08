@@ -46,6 +46,7 @@ These test ids are stable. An end-to-end test can read them.
 | `account-version` | The version of the account service. |
 | `core-version` | The version of core, as the two APIs report it. |
 | `product` | One list item for each product. |
+| `discount` | The discount of a product, for example `10% off`. Present only when the catalogue sends one. |
 | `profile-name` | The name of the profile. |
 | `catalogue-error`, `account-error` | The error block of a failed API. |
 
@@ -119,7 +120,7 @@ This README does not copy them. It lists what is the same and what is different.
 - A CodeDeploy deployment group moves the traffic of the alias to each new version. If an alarm fires, it stops and rolls the traffic back.
 - Each request writes one line of JSON to the log and one metric line (embedded metric format). The metric has the dimensions `service` and `version`.
 - OpenTelemetry makes the traces, and Lambda active tracing is off. The log line carries the trace ID in the form of X-Ray. See "Tracing".
-- The stage config has the settings `release` and `injectFault`. A unit test compares the templates of the three stages.
+- The stage config has the settings `release`, `injectFault` and `forwardFlagOverride`. A unit test compares the templates of the three stages.
 
 ### What is different from core
 
@@ -333,6 +334,13 @@ A real server-side rendered application does more. This lab keeps only the part 
 - **No streaming and no cache.** The function waits for both APIs and sends the whole page at once. The response has `cache-control: no-store`.
 - **No sign-in.** The profile is the same for each visitor, because the account API returns a fixed mock profile.
 
+## Feature flags
+
+The page shows a discount beside a product when the catalogue API sends one, for example `10% off`, with `data-testid="discount"`.
+The catalogue sends a discount only while its flag `show-discounts` is on, so the page stays the same while the flag is off.
+The stage setting `forwardFlagOverride` is true for Test and Dev and false for Staging and Production.
+Where it is true, the page copies a valid `x-lab-flags` header of `GET /` to the catalogue request and drops any other value, so `curl -H 'x-lab-flags: show-discounts=on' "$TEST_URL"` shows the discounts of Test.
+
 ## Stages
 
 One `cdk synth` makes three CDK stages: `Test`, `Staging` and `Production`.
@@ -343,6 +351,7 @@ Each stage holds one stack, `lab-web`. The file `lib/stages.ts` holds the settin
 | `logRetentionDays` | 7 | 7 | 30 |
 | `release` | all at once | all at once | canary: 10 percent, then 100 percent after 5 minutes |
 | `injectFault` | false | false | false |
+| `forwardFlagOverride` | true | false | false |
 
 Every stage has the same resources: the same alias, the same deployment group, the same alarms and the same dashboard.
 Only the values in the table differ. So Test runs what Production runs. A unit test checks this: it compares the three templates.

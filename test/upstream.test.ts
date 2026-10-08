@@ -73,6 +73,56 @@ describe('fetchCatalogue', () => {
   });
 });
 
+describe('the optional discount of a product', () => {
+  const withProducts = (products: unknown[]) => json({ ...catalogueBody, products });
+
+  it('keeps a numeric discount, also a discount of 0', async () => {
+    const data = await fetchCatalogue(
+      BASE,
+      options(async () =>
+        withProducts([
+          { id: 'a', name: 'A', price: 1, discount: 10 },
+          { id: 'b', name: 'B', price: 2, discount: 0 },
+        ]),
+      ),
+    );
+    expect(data.products.map((product) => product.discount)).toEqual([10, 0]);
+  });
+
+  it('adds no discount key to a product that has none', async () => {
+    const data = await fetchCatalogue(BASE, options(async () => json(catalogueBody)));
+    for (const product of data.products) expect(Object.keys(product)).toEqual(['id', 'name', 'price']);
+  });
+
+  it.each([
+    ['a string', '10'],
+    ['null', null],
+    ['a boolean', true],
+    ['an object', { percent: 10 }],
+  ])('throws a safe error when the discount is %s', async (_name, discount) => {
+    const answer = withProducts([{ id: 'a', name: 'A', price: 1, discount }]);
+    const error = await fetchCatalogue(BASE, options(async () => answer)).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UpstreamError);
+    expect((error as UpstreamError).message).toBe('an answer that this page does not understand');
+  });
+});
+
+describe('the extra headers of the catalogue request', () => {
+  it('sends the given headers on the request to GET /products', async () => {
+    const seen: unknown[] = [];
+    await fetchCatalogue(BASE, options(async (_url, init) => (seen.push(init.headers), json(catalogueBody))), {
+      'x-lab-flags': 'show-discounts=on',
+    });
+    expect(seen).toEqual([{ 'x-lab-flags': 'show-discounts=on' }]);
+  });
+
+  it('sends no headers when none are given', async () => {
+    const seen: unknown[] = [];
+    await fetchCatalogue(BASE, options(async (_url, init) => (seen.push(init.headers), json(catalogueBody))));
+    expect(seen).toEqual([undefined]);
+  });
+});
+
 describe('fetchAccount', () => {
   it('calls GET /profile on the base URL and returns the checked data', async () => {
     const urls: string[] = [];

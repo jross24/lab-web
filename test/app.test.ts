@@ -171,6 +171,13 @@ describe('the stage config', () => {
     }
     expect(DEV_STAGE.injectFault).toBe(false);
   });
+
+  it('forwards the flag override header in Test and Dev, and in no other stage', () => {
+    expect(STAGES.Test.forwardFlagOverride).toBe(true);
+    expect(STAGES.Staging.forwardFlagOverride).toBe(false);
+    expect(STAGES.Production.forwardFlagOverride).toBe(false);
+    expect(DEV_STAGE.forwardFlagOverride).toBe(true);
+  });
 });
 
 describe('the deployment configuration of each stage', () => {
@@ -200,13 +207,14 @@ describe('the deployment configuration of each stage', () => {
 
   it('is the only difference between the templates of the stages, apart from the stage config', () => {
     // Test must exercise the resources that Production runs. So the stages must differ only in the stage config:
-    // the log retention, the deployment configuration, and the fault switch of the drill with the id of the
+    // the log retention, the deployment configuration, the switch of the flag override, and the fault switch of the drill with the id of the
     // Lambda version that the switch changes.
     const normalised = (stage: string): string =>
       JSON.stringify(stackOf(stage).template)
         .replace(/"RetentionInDays":[0-9]+/g, '"RetentionInDays":0')
         .replace(/CodeDeployDefault\.Lambda[A-Za-z0-9]+/g, 'CodeDeployDefault.Lambda')
         .replace(/"INJECT_FAULT":"true",/g, '')
+        .replace(/"FORWARD_FLAG_OVERRIDE":"true",/g, '')
         .replace(/CurrentVersion[0-9A-F]{8}[0-9a-f]{32}/g, 'CurrentVersion');
     expect(normalised('Staging')).toBe(normalised('Test'));
     expect(normalised('Production')).toBe(normalised('Test'));

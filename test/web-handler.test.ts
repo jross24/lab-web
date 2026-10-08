@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import type { APIGatewayProxyEventV2, Context } from 'aws-lambda';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpanKind, SpanStatusCode } from '@opentelemetry/api';
@@ -365,6 +366,116 @@ describe('the exported handler: the log line and the metric line', () => {
     expect(firstMetric).toMatchObject({ errors: 1 });
     expect(secondLog).not.toHaveProperty('degraded');
     expect(secondMetric).toMatchObject({ errors: 0 });
+  });
+});
+
+describe('the discount and the flag override header on GET /', () => {
+  const HEADER = 'x-lab-flags';
+  const FORWARDING = { ...ENV, FORWARD_FLAG_OVERRIDE: 'true' };
+  const withDiscount = {
+    ...catalogueBody,
+    products: catalogueBody.products.map((product) => ({ ...product, discount: 10 })),
+  };
+
+  // A fake fetch that records the headers of each request, by service.
+  function recordingFetch(catalogueAnswer: unknown) {
+    const headers: { catalogue: unknown[]; account: unknown[] } = { catalogue: [], account: [] };
+    const send: FetchLike = async (url, init) => {
+      const isCatalogue = url.startsWith(ENV.CATALOGUE_URL);
+      (isCatalogue ? headers.catalogue : headers.account).push(init.headers);
+      return json(isCatalogue ? catalogueAnswer : accountBody);
+    };
+    return { send, headers };
+  }
+
+  const call = (env: Record<string, string | undefined>, header: string | undefined, catalogueAnswer: unknown = catalogueBody) => {
+    const { send, headers } = recordingFetch(catalogueAnswer);
+    const handle = createHandler({ fetch: send, env, timeoutMs: 20 });
+    const event = header === undefined ? page : { ...page, headers: { [HEADER]: header } };
+    return { response: handle(event), headers };
+  };
+
+  it('shows one discount for each product when the catalogue sends discounts', async () => {
+    const { response } = call(ENV, undefined, withDiscount);
+    expect(textsOf((await response).body, 'discount')).toEqual(['10% off', '10% off']);
+  });
+
+  it('shows no discount when the catalogue sends none', async () => {
+    const { response } = call(ENV, undefined);
+    expect((await response).body).not.toContain('data-testid="discount"');
+  });
+
+  it('returns the page of before, byte for byte, when the catalogue sends no discount, also with the header', async () => {
+    const golden = readFileSync(new URL('./golden/page-without-discount.html', import.meta.url), 'utf8');
+    expect((await call(ENV, undefined).response).body).toBe(golden);
+    expect((await call(ENV, 'show-discounts=on').response).body).toBe(golden);
+    expect((await call(FORWARDING, undefined).response).body).toBe(golden);
+  });
+
+  describe('where the stage forwards the override', () => {
+    it.each(['show-discounts=on', 'show-discounts=off', 'show-discounts=on,other_flag-2=off', 'a=on'])(
+      'sends the valid header %j to the catalogue, unchanged',
+      async (value) => {
+        const { response, headers } = call(FORWARDING, value);
+        await response;
+        expect(headers.catalogue).toEqual([{ [HEADER]: value }]);
+      },
+    );
+
+    it('does not send the header to the account API', async () => {
+      const { response, headers } = call(FORWARDING, 'show-discounts=on');
+      await response;
+      expect(headers.account).toEqual([undefined]);
+    });
+
+    it('sends no header when the request has none', async () => {
+      const { response, headers } = call(FORWARDING, undefined);
+      await response;
+      expect(headers.catalogue).toEqual([undefined]);
+    });
+
+    it('works for an event with headers but without the header', async () => {
+      const { send, headers } = recordingFetch(catalogueBody);
+      const handle = createHandler({ fetch: send, env: FORWARDING, timeoutMs: 20 });
+      await handle({ ...page, headers: { accept: 'text/html' } });
+      expect(headers.catalogue).toEqual([undefined]);
+    });
+
+    it.each([
+      ['no equals sign', 'show-discounts'],
+      ['a value that is not on or off', 'show-discounts=maybe'],
+      ['a value in capitals', 'show-discounts=ON'],
+      ['an empty name', '=on'],
+      ['a name that starts with an underscore', '__proto__=on'],
+      ['a name that starts with a digit', '1flag=on'],
+      ['a trailing comma', 'show-discounts=on,'],
+      ['a space', 'show-discounts=on, other=off'],
+      ['a leading space', ' show-discounts=on'],
+      ['a semicolon', 'show-discounts=on;x=y'],
+      ['a line break', 'show-discounts=on\r\nx-evil: 1'],
+      ['an empty text', ''],
+      ['a name of 65 characters', `a${'b'.repeat(64)}=on`],
+      ['a text longer than 512 characters', Array.from({ length: 80 }, (_unused, index) => `f${index}=on`).join(',')],
+    ])('drops a header with %s, and still shows the page', async (_name, value) => {
+      const { response, headers } = call(FORWARDING, value);
+      expect((await response).statusCode).toBe(200);
+      expect(headers.catalogue).toEqual([undefined]);
+    });
+  });
+
+  describe('where the stage does not forward the override', () => {
+    it.each([
+      ['no variable', ENV],
+      ['the variable "false"', { ...ENV, FORWARD_FLAG_OVERRIDE: 'false' }],
+      ['the variable "TRUE"', { ...ENV, FORWARD_FLAG_OVERRIDE: 'TRUE' }],
+      ['the variable "1"', { ...ENV, FORWARD_FLAG_OVERRIDE: '1' }],
+      ['an empty variable', { ...ENV, FORWARD_FLAG_OVERRIDE: '' }],
+    ])('never sends the header, with %s', async (_name, env) => {
+      const { response, headers } = call(env, 'show-discounts=on');
+      await response;
+      expect(headers.catalogue).toEqual([undefined]);
+      expect(headers.account).toEqual([undefined]);
+    });
   });
 });
 

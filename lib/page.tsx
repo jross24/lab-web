@@ -60,6 +60,12 @@ function Products({ catalogue }: { catalogue: Section<CatalogueData> }) {
           {catalogue.data.products.map((product) => (
             <li key={product.id} data-testid="product">
               <span>{product.name}</span> <span>{product.price}</span>
+              {product.discount === undefined ? null : (
+                <>
+                  {' '}
+                  <span data-testid="discount">{`${product.discount}% off`}</span>
+                </>
+              )}
             </li>
           ))}
         </ul>
