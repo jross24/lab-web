@@ -112,10 +112,7 @@ This README does not copy them. It lists what is the same and what is different.
 
 ### What is the same as core
 
-- Nine files are exact copies of the files in core. Change them in core, then copy them again.
-  - The release and the observability: `lib/gradual-release.ts`, `lib/service-dashboard.ts`, `lib/instrument.ts`, `lib/logger.ts` and `lib/metrics.ts`.
-  - The tracing: `lib/tracing.ts`, `lib/xray-exporter.ts`, `lib/sigv4.ts` and `lib/function-defaults.ts`.
-  - The tests of the tracing files are copies too: `test/tracing.test.ts`, `test/xray-exporter.test.ts`, `test/sigv4.test.ts` and `test/function-defaults.test.ts`.
+- The shared files are pinned copies of `shared/` in lab-workflows: 9 files in `lib/`, 7 tests and `test/support/contract-schema.ts`. `shared.lock.json` names the commit, and the job `shared` of the pull request check fails when a copy is not byte-equal to that commit. To change a shared file, change it in lab-workflows, then run `node actions/shared-files/sync.mjs <path to this repository>` in a clone of lab-workflows (see the section "Shared files" of its README).
 - The function has the alias `live`. The API calls the alias, and not the function.
 - A CodeDeploy deployment group moves the traffic of the alias to each new version. If an alarm fires, it stops and rolls the traffic back.
 - Each request writes one line of JSON to the log and one metric line (embedded metric format). The metric has the dimensions `service` and `version`.
@@ -463,16 +460,17 @@ The `Dev` stage has the alias, the deployment group, the alarms and the dashboar
 | `lib/stages.ts` | The typed settings of each stage: log retention, the release type and the fault switch. |
 | `lib/web-stage.ts` | The CDK stage. |
 | `lib/web-stack.ts` | The stack: SSM lookups, function (512 MB, ES module bundle with the production build of React only, one X-Ray statement), alias and release, API, dashboard, SSM parameters, outputs. |
-| `lib/gradual-release.ts` | **Copy of core.** The alias, the deployment group, the three alarms and the `Release` type. |
-| `lib/service-dashboard.ts` | **Copy of core.** The dashboard of a stage. |
-| `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | **Copy of core.** The wrapper of the handler (it makes the server span), the log line and the metric line. |
-| `lib/tracing.ts` | **Copy of core.** The OpenTelemetry tracing: the server span, the client span, the header `traceparent` and the flush. |
-| `lib/xray-exporter.ts` | **Copy of core.** Sends the spans to the OTLP endpoint of X-Ray. |
-| `lib/sigv4.ts` | **Copy of core.** AWS Signature Version 4. Only the exporter uses it. |
-| `lib/function-defaults.ts` | **Copy of core.** The memory (512 MB) and the esbuild settings (ES module) of the function. |
+| `lib/gradual-release.ts` | **Shared file.** The alias, the deployment group, the three alarms and the `Release` type. |
+| `lib/service-dashboard.ts` | **Shared file.** The dashboard of a stage. |
+| `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | **Shared file.** The wrapper of the handler (it makes the server span), the log line and the metric line. |
+| `lib/tracing.ts` | **Shared file.** The OpenTelemetry tracing: the server span, the client span, the header `traceparent` and the flush. |
+| `lib/xray-exporter.ts` | **Shared file.** Sends the spans to the OTLP endpoint of X-Ray. |
+| `lib/sigv4.ts` | **Shared file.** AWS Signature Version 4. Only the exporter uses it. |
+| `lib/function-defaults.ts` | **Shared file.** The memory (512 MB) and the esbuild settings (ES module) of the function. |
 | `lib/web-handler.ts` | The Lambda handler. It routes the two requests, calls the two APIs, sets the signal `degraded` and holds the fault switch. |
 | `lib/upstream.ts` | Calls the two APIs, with a time limit and a client span, and checks the answers. |
 | `lib/page.tsx` | The React components. They are pure: data in, markup out. |
 | `expectations.json` | The fields that the page reads from catalogue and account. `test/expectations.test.ts` checks that the parsers need exactly these fields. |
-| `test/` | The unit tests (vitest). `tracing.test.ts`, `xray-exporter.test.ts`, `sigv4.test.ts`, `function-defaults.test.ts`, `contract-schema.test.ts` and `support/contract-schema.ts` are copies of the files of core. |
+| `shared.lock.json` | The pin: the commit of lab-workflows that the shared files come from. |
+| `test/` | The unit tests (vitest). `tracing.test.ts`, `xray-exporter.test.ts`, `sigv4.test.ts`, `function-defaults.test.ts`, `contract-schema.test.ts` and `support/contract-schema.ts` are shared files. |
 | `.github/workflows/` | Three small files that call the workflows in lab-workflows. |
