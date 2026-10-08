@@ -94,7 +94,11 @@ Deploy a service to an account only after the services before it are in that acc
 
 CloudFormation reads `/lab/catalogue/url` and `/lab/account/url` when it deploys this stack.
 If one of them does not exist, the deployment fails before it creates a resource.
-The pipeline deploys each service on its own, so it does not enforce this order. You must keep it.
+The file `pipeline.json` names the services that this service needs: `catalogue >=0.3.0` and `account >=0.3.0`.
+Before each deploy job changes an environment, the pipeline reads `/lab/catalogue/version` and `/lab/account/version` in that environment.
+It stops the job with a clear message if one of them is missing or outside its range. The job fails before CloudFormation starts, so it changes nothing.
+The pipeline also compares the set of versions that passed in Test with the environment. Core is not in `pipeline.json` of this service, so Production must run
+at least the version of core that the E2E suite tested with this release. The README of [lab-workflows](https://github.com/jross24/lab-workflows) explains both checks.
 
 CloudFormation reads the parameters again at each deployment of this stack.
 If an API gets a new URL, release or redeploy this application to pick it up.
