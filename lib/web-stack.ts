@@ -1,7 +1,8 @@
 import { fileURLToPath } from 'node:url';
-import { CfnOutput, Duration, RemovalPolicy, Stack } from 'aws-cdk-lib';
+import { CfnOutput, Duration, RemovalPolicy, Stack, Tags } from 'aws-cdk-lib';
 import { CfnIntegration, HttpApi, HttpMethod } from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import type { CfnDashboard } from 'aws-cdk-lib/aws-cloudwatch';
 import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import { CfnPermission, Runtime } from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -11,6 +12,7 @@ import { StringParameter } from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
 import { FUNCTION_BUNDLING, FUNCTION_MEMORY_MB, tracingEnvironment } from './function-defaults.ts';
 import { GradualRelease } from './gradual-release.ts';
+import { NAMESPACE_TAG, namesFor, providerNamesFor } from './namespace.ts';
 import { ServiceDashboard } from './service-dashboard.ts';
 import type { StageConfig } from './stages.ts';
 
@@ -43,18 +45,34 @@ export const WEB_BUNDLING: BundlingOptions = {
 export interface WebStackProps {
   readonly version: string;
   readonly config: StageConfig;
+  // Only the Dev stage sets it (the context value `namespace`). It gives the stack, the two parameters that the stack
+  // writes and the dashboard names of their own, so that several copies of the service can live in one account.
+  // With no namespace the stack has the names of the baseline copy. See "Namespaces" in the README.
+  readonly namespace?: string;
+  // Only the Dev stage sets these two (the context values `catalogueNamespace` and `accountNamespace`). Each one makes
+  // the stack read the URL of a preview of that provider and not the URL of the baseline copy of the account.
+  // They change what the stack reads and never what it writes.
+  readonly catalogueNamespace?: string;
+  readonly accountNamespace?: string;
 }
 
 export class WebStack extends Stack {
   constructor(scope: Construct, id: string, props: WebStackProps) {
+    const names = namesFor(props.namespace);
+    const providers = providerNamesFor(props);
     // No env here: the stack takes the account and the region of the credentials that deploy it.
-    super(scope, id, { stackName: 'lab-web' });
+    super(scope, id, { stackName: names.stackName });
+
+    // The tag goes to the stack and to every resource that can have a tag. A copy with no namespace has no tag.
+    if (props.namespace !== undefined) Tags.of(this).add(NAMESPACE_TAG, props.namespace);
 
     // The catalogue stack and the account stack write these parameters in each account.
     // CloudFormation reads them at deployment, so one synth serves each account.
     // So both services must be in an account before this stack can go there.
-    const catalogueUrl = StringParameter.valueForStringParameter(this, '/lab/catalogue/url');
-    const accountUrl = StringParameter.valueForStringParameter(this, '/lab/account/url');
+    // By default a copy reads the parameters of the baseline copy of each provider. The context values
+    // catalogueNamespace and accountNamespace point it at the parameters of a preview of that provider.
+    const catalogueUrl = StringParameter.valueForStringParameter(this, providers.catalogueUrlParameterName);
+    const accountUrl = StringParameter.valueForStringParameter(this, providers.accountUrlParameterName);
 
     const webFunction = new NodejsFunction(this, 'WebFunction', {
       entry: fileURLToPath(new URL('./web-handler.ts', import.meta.url)),
@@ -120,18 +138,23 @@ export class WebStack extends Stack {
     }
 
     // The shared dashboard code names the dashboard lab-svc-<service>, so this one is lab-svc-web.
-    new ServiceDashboard(this, 'Dashboard', { service: SERVICE, release, api });
+    const dashboard = new ServiceDashboard(this, 'Dashboard', { service: SERVICE, release, api });
+    if (props.namespace !== undefined) {
+      // That file is a copy of the file in lab-workflows, and it stays unchanged. So a copy with a namespace sets the
+      // name in the template. The property dashboardName of the construct keeps the old name, and nothing here reads it.
+      (dashboard.dashboard.node.defaultChild as CfnDashboard).addPropertyOverride('DashboardName', names.dashboardName);
+    }
 
     // A later phase reads this parameter to find the application, for example in an end-to-end test.
     new StringParameter(this, 'UrlParameter', {
-      parameterName: '/lab/web/url',
+      parameterName: names.urlParameterName,
       description: 'Base URL of the web application',
       stringValue: api.apiEndpoint,
     });
 
     // The pipeline of the other services reads this parameter. It checks the deployment order and the set of tested versions.
     const versionParameter = new StringParameter(this, 'VersionParameter', {
-      parameterName: '/lab/web/version',
+      parameterName: names.versionParameterName,
       description: 'Version of web that this stack runs',
       stringValue: props.version,
     });
