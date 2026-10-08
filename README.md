@@ -375,6 +375,13 @@ gh workflow run redeploy.yml -f version=0.1.0 -f environment=test
 
 The three files in `.github/workflows/` are copies of the files in lab-svc-catalogue. This repository has no other pipeline code.
 
+## The contract files
+
+The file `expectations.json` lists the fields that the page reads from `GET /products` of catalogue and from `GET /profile` of account.
+The application serves HTML to people and offers no API to another service, so it has no `contract.json`.
+On each pull request, the job `pr / contracts` compares the file with the contracts in Production and fails if a field is missing.
+The test `test/expectations.test.ts` runs the real parsers of `lib/upstream.ts` against the file, so the file and the code cannot drift apart.
+
 ## Run the checks locally
 
 You need Node.js 22.18 or later. Node.js runs the TypeScript files directly, so there is no build step.
@@ -425,5 +432,6 @@ The `Dev` stage has the alias, the deployment group, the alarms and the dashboar
 | `lib/web-handler.ts` | The Lambda handler. It routes the two requests, calls the two APIs, sets the signal `degraded` and holds the fault switch. |
 | `lib/upstream.ts` | Calls the two APIs, with a time limit and a client span, and checks the answers. |
 | `lib/page.tsx` | The React components. They are pure: data in, markup out. |
-| `test/` | The unit tests (vitest). `tracing.test.ts`, `xray-exporter.test.ts` and `sigv4.test.ts` are copies of the tests of core. |
+| `expectations.json` | The fields that the page reads from catalogue and account. `test/expectations.test.ts` checks that the parsers need exactly these fields. |
+| `test/` | The unit tests (vitest). `tracing.test.ts`, `xray-exporter.test.ts`, `sigv4.test.ts`, `contract-schema.test.ts` and `support/contract-schema.ts` are copies of the files of core. |
 | `.github/workflows/` | Three small files that call the workflows in lab-workflows. |
