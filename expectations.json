@@ -1,0 +1,74 @@
+{
+  "service": "web",
+  "expects": {
+    "catalogue": {
+      "GET /products": {
+        "sends": [],
+        "responses": {
+          "200": {
+            "type": "object",
+            "required": ["version", "core", "products"],
+            "properties": {
+              "version": { "type": "string", "description": "The version of catalogue. The page shows it in the table of versions." },
+              "core": {
+                "type": "object",
+                "description": "The parser rejects the answer without this block. The page shows the version of core.",
+                "required": ["version", "itemCount"],
+                "properties": {
+                  "version": { "type": "string", "description": "The version of core. The page shows it in the table of versions." },
+                  "itemCount": { "type": "number", "description": "The parser checks it and keeps it. The page does not show it. It reads no other field of core." }
+                }
+              },
+              "products": {
+                "type": "array",
+                "description": "The page shows one line for each product.",
+                "items": {
+                  "type": "object",
+                  "required": ["id", "name", "price"],
+                  "properties": {
+                    "id": { "type": "string", "description": "The key of the line." },
+                    "name": { "type": "string", "description": "Shown in the line." },
+                    "price": { "type": "number", "description": "Shown in the line." }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "account": {
+      "GET /profile": {
+        "sends": [],
+        "responses": {
+          "200": {
+            "type": "object",
+            "required": ["version", "core", "profile"],
+            "properties": {
+              "version": { "type": "string", "description": "The version of account. The page shows it in the table of versions." },
+              "core": {
+                "type": "object",
+                "description": "The parser rejects the answer without this block. The page shows the version of core.",
+                "required": ["version", "itemCount"],
+                "properties": {
+                  "version": { "type": "string", "description": "The version of core. The page shows it in the table of versions." },
+                  "itemCount": { "type": "number", "description": "The parser checks it and keeps it. The page does not show it. It reads no other field of core." }
+                }
+              },
+              "profile": {
+                "type": "object",
+                "description": "The profile of the user.",
+                "required": ["id", "name", "plan"],
+                "properties": {
+                  "id": { "type": "string", "description": "The parser checks it and keeps it. The page does not show it." },
+                  "name": { "type": "string", "description": "Shown in the profile section." },
+                  "plan": { "type": "string", "description": "Shown in the profile section." }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
