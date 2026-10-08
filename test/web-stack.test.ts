@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { RetentionDays } from 'aws-cdk-lib/aws-logs';
-import { FUNCTION_MEMORY_MB } from '../lib/function-defaults.ts';
-import { FUNCTION_TIMEOUT, LATENCY_P99_THRESHOLD_MS, WebStack } from '../lib/web-stack.ts';
+import { transformSync } from 'esbuild';
+import { FUNCTION_BUNDLING, FUNCTION_MEMORY_MB } from '../lib/function-defaults.ts';
+import { FUNCTION_TIMEOUT, LATENCY_P99_THRESHOLD_MS, WEB_BUNDLING, WebStack } from '../lib/web-stack.ts';
 import type { StageConfig } from '../lib/stages.ts';
 
 const ALL_AT_ONCE: StageConfig['release'] = { kind: 'allAtOnce' };
@@ -56,7 +57,7 @@ describe('WebStack', () => {
       Environment: {
         Variables: {
           VERSION: '1.2.3',
-          // Without it, React runs its slow development build.
+          // Code outside the bundle reads it at run time. The bundle itself gets the value from WEB_BUNDLING.
           NODE_ENV: 'production',
           CATALOGUE_URL: { Ref: ssmParameterId(template, '/lab/catalogue/url') },
           ACCOUNT_URL: { Ref: ssmParameterId(template, '/lab/account/url') },
@@ -624,5 +625,26 @@ describe('the dashboard', () => {
       `<GetAtt:${idOf('Duration')}.Arn>`,
       `<GetAtt:${idOf('errors')}.Arn>`,
     ]);
+  });
+});
+
+describe('the bundling options of the function', () => {
+  const key = 'process.env.NODE_ENV';
+
+  it('keep the shared options and add a build-time value for process.env.NODE_ENV', () => {
+    expect(WEB_BUNDLING).toMatchObject(FUNCTION_BUNDLING);
+    expect(Object.keys(WEB_BUNDLING.define ?? {})).toEqual([key]);
+  });
+
+  it('give esbuild the string "production", so that it can remove the development build of React', () => {
+    const { code } = transformSync('x = process.env.NODE_ENV === "production" ? 1 : 2', { define: WEB_BUNDLING.define });
+    expect(code).toBe('x = true ? 1 : 2;\n');
+  });
+
+  it('write the value without a double quote or a backslash, because the CDK passes the argument through a shell', () => {
+    // On Windows, CDK runs esbuild through Windows PowerShell 5.1. That shell removes the double quotes of an argument,
+    // and esbuild then reads the value as an identifier. A backslash before the quote reaches esbuild as it is.
+    // esbuild accepts a string with single quotes, and no shell changes it.
+    expect(WEB_BUNDLING.define?.[key]).not.toMatch(/["\\]/);
   });
 });
