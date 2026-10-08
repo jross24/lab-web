@@ -230,6 +230,8 @@ The rollback is cheap. Web stores no data, and CodeDeploy only moves the alias b
 
 The alarm cannot tell if web or an API caused the errors. The field `degraded` of the log line names the API. The full error is in the text line that `console.error` writes.
 
+The lab proved the third alarm in `lab-dev` with catalogue, which uses the same shared code: see "What an error means here" in the README of lab-svc-catalogue. It did not run the degraded-page case of web in AWS.
+
 ## Where the latency threshold comes from
 
 The latency alarm fires when the p99 duration of the alias `live` is over **3000 ms** in 2 periods of 1 minute in a row.
