@@ -1,0 +1,7 @@
+{
+  "service": "web",
+  "requires": {
+    "catalogue": ">=0.3.0",
+    "account": ">=0.3.0"
+  }
+}
