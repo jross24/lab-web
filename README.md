@@ -200,7 +200,7 @@ Another test sends two pages at the same time and checks that each page keeps it
    ```
 
 The result has the spans of web, of catalogue or account, and of core. They share one trace ID.
-The OTLP endpoint of X-Ray needs CloudWatch Transaction Search. The stack of core turns it on for the account. This repository does not touch it.
+The OTLP endpoint of X-Ray needs CloudWatch Transaction Search. The `Platform` stack of lab-platform owns it for the account. This repository does not touch it.
 
 ### What the stack adds
 
@@ -316,7 +316,8 @@ How the value follows from the numbers:
 - Two periods in a row ignore one cold minute. The alarm still fires when the page stays slow for two minutes, because then one cold start is probably not the cause.
 
 Issue [lab-platform#17](https://github.com/jross24/lab-platform/issues/17) has the first observation of the cold chain (3.8 s before the tracing change).
-The lab did not yet run a canary under this threshold in Production. Look at the graph "Duration of the alias live" after the first gradual releases, and adjust the value.
+Web has released 16 versions (v0.3.0 to v0.8.2) through the Production canary under this threshold. The release list of this repository shows them.
+Look at the graph "Duration of the alias live" to see how far the cold chain stays under the value, and adjust the value if the margin is small.
 
 ## What a canary means for a web application
 
