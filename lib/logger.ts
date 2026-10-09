@@ -49,3 +49,5 @@ export function formatLogLine(fields: LogFields, now: Date = new Date()): string
     ...(flags === undefined ? {} : { flags, flagsSource, flagsOverridden }),
   });
 }
+
+// proof branch for lab-platform#63: one changed byte in a shared file. Never merge.
