@@ -6,6 +6,7 @@ import { providerNamesFor } from '../lib/namespace.ts';
 
 // The context values catalogueNamespace and accountNamespace point web at a preview of a provider.
 // They change only what web reads. What web writes follows the context value namespace (namespace.test.ts).
+// Each one needs namespace too: the baseline copy of web always reads the baseline providers.
 
 interface TemplateShape {
   readonly Resources: Record<string, { readonly Type: string; readonly Properties?: Record<string, unknown> }>;
@@ -137,11 +138,24 @@ describe('the app with both provider namespaces', () => {
 });
 
 describe('a provider namespace on the baseline copy of web', () => {
-  it('changes only what web reads: the stack name, the written parameters and the dashboard stay the baseline', () => {
-    const stack = synthDev({ catalogueNamespace: 'pr-5' });
-    expect(stack.stackName).toBe('lab-web');
-    expect(writes(stack)).toEqual(['/lab/web/url', '/lab/web/version']);
-    expect(stack.tags).toEqual({});
+  // The baseline copy has no namespace. A preview of a provider goes away when its pull request closes,
+  // so a baseline copy that read it would call a dead URL. The app refuses the combination.
+  it.each(['catalogueNamespace', 'accountNamespace'])('stops the app when %s is set without namespace', (name) => {
+    expect(() => createApp({ dev: 'true', [name]: 'pr-5' })).toThrow(
+      new RegExp(`Context value ${name} works only together with namespace`),
+    );
+  });
+
+  it('stops the app when both provider namespaces are set without namespace', () => {
+    expect(() => createApp({ dev: 'true', catalogueNamespace: 'pr-5', accountNamespace: 'pr-7' })).toThrow(
+      /works only together with namespace/,
+    );
+  });
+
+  it('names the fix in the message: set namespace too', () => {
+    expect(() => createApp({ dev: 'true', catalogueNamespace: 'pr-5' })).toThrow(
+      /Example: -c dev=true -c namespace=my-test -c catalogueNamespace=pr-5/,
+    );
   });
 });
 

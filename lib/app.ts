@@ -25,6 +25,7 @@ function readDev(app: App): boolean {
 }
 
 // Reads one of the namespace context values: namespace, catalogueNamespace or accountNamespace.
+// The two provider values go through readProviderNamespace, which adds the rule about namespace.
 function readNamespace(app: App, dev: boolean, contextValue: string): string | undefined {
   const namespace: unknown = app.node.tryGetContext(contextValue);
   if (namespace === undefined) return undefined;
@@ -36,16 +37,29 @@ function readNamespace(app: App, dev: boolean, contextValue: string): string | u
   return parseNamespace(namespace, contextValue);
 }
 
+// Reads catalogueNamespace or accountNamespace.
+function readProviderNamespace(app: App, dev: boolean, contextValue: string, namespace: string | undefined): string | undefined {
+  const providerNamespace = readNamespace(app, dev, contextValue);
+  // Without a namespace the copy is the baseline copy of the account. It must not point at a preview of a provider,
+  // because the preview goes away when its pull request closes.
+  if (providerNamespace !== undefined && namespace === undefined) {
+    throw new Error(
+      `Context value ${contextValue} works only together with namespace. Example: -c dev=true -c namespace=my-test -c ${contextValue}=pr-5`,
+    );
+  }
+  return providerNamespace;
+}
+
 // Context values: version (default 0.0.0-dev), dev (default false), and only with dev=true these three:
 // namespace (names of the copy, default none), catalogueNamespace and accountNamespace (which preview of a provider the
-// copy reads, default none: the baseline copy of the provider).
+// copy reads, default none: the baseline copy of the provider). The two provider values need namespace too.
 export function createApp(context?: Record<string, unknown>): App {
   const app = new App({ context });
   const version = readVersion(app);
   const dev = readDev(app);
   const namespace = readNamespace(app, dev, 'namespace');
-  const catalogueNamespace = readNamespace(app, dev, 'catalogueNamespace');
-  const accountNamespace = readNamespace(app, dev, 'accountNamespace');
+  const catalogueNamespace = readProviderNamespace(app, dev, 'catalogueNamespace', namespace);
+  const accountNamespace = readProviderNamespace(app, dev, 'accountNamespace', namespace);
 
   if (dev) {
     // Only the Dev stage, so a laptop cannot deploy a pipeline stage by accident.

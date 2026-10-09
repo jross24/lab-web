@@ -532,6 +532,9 @@ npx cdk deploy -c dev=true -c namespace=my-test -c catalogueNamespace=pr-5 -c ac
 ```
 
 - Both values follow the rules of `namespace`: the same characters, and only with `dev=true`. A pipeline stage never reads them.
+- Both values need `namespace` too. A copy with no `namespace` is the baseline copy of the account, and the baseline copy always reads the baseline providers.
+  A preview of a provider goes away when its pull request closes, so a baseline copy that read it would call a dead URL.
+  The app stops with the error `Context value catalogueNamespace works only together with namespace` (or `accountNamespace`). Add `-c namespace=my-test`.
 - The provider preview must exist before this deployment. CloudFormation reads the parameter at deployment and fails when it is missing.
   A preview of catalogue or account exists only while its pull request has the label `preview`, and the parameter goes away when the pull request closes.
 - A copy writes only under its own `/lab/ns/<namespace>/web/`. It never writes a parameter of a provider.

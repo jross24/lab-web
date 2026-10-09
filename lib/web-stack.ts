@@ -51,7 +51,8 @@ export interface WebStackProps {
   readonly namespace?: string;
   // Only the Dev stage sets these two (the context values `catalogueNamespace` and `accountNamespace`). Each one makes
   // the stack read the URL of a preview of that provider and not the URL of the baseline copy of the account.
-  // They change what the stack reads and never what it writes.
+  // They change what the stack reads and never what it writes. Each one needs `namespace` too (the app checks it),
+  // so the baseline copy never reads a preview of a provider.
   readonly catalogueNamespace?: string;
   readonly accountNamespace?: string;
 }
